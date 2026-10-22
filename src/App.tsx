@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { BootOverlay } from './app/BootOverlay';
 import { DiagnosticsPanel } from './app/DiagnosticsPanel';
 import { RecoveryBoundary } from './app/RecoveryBoundary';
 import { setBootError, setBootStage } from './app/bootOverlay';
 import { logError } from './app/errorLog';
+import { eventBus } from './core/bridge/eventBus';
 import { selectPersistedProgress, useGameStore } from './core/bridge/gameStore';
 import {
   exportSave,
@@ -15,6 +16,10 @@ import {
 import { soundController } from './core/audio/SoundController';
 import { CyberDeckScreen } from './ui/cyberdeck/CyberDeckScreen';
 import type { QuestDefinition } from './shared/types';
+
+// Desa (Phaser) dimuat malas: chunk dunia terpisah dari bundle utama, dan
+// Cyber-Deck tidak ikut membayar biaya Phaser (Fase 2).
+const WorldScreen = lazy(() => import('./ui/world/WorldScreen'));
 
 // Content is data-driven (BLUEPRINT §3 rule 2): quests arrive as config
 // modules under src/content/quests/. The glob resolves to {} until the
@@ -55,6 +60,7 @@ function AppShell() {
   const [musicOn, setMusicOn] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentQuestId = useGameStore((s) => s.currentQuestId);
@@ -124,8 +130,23 @@ function AppShell() {
     // Teks cerita TIDAK lagi disalurkan ke balon Piko (audit layout E:
     // balon 170px + 561 karakter = menara teks). Cerita hidup di dialog
     // pembuka (modal) dan tab Cerita di dalam deck.
+    setPickerOpen(false);
     setDeckOpen(true);
   };
+
+  // Dunia (Phaser) meminta deck dibuka dari anchor quest (Fase 2).
+  const questClickRef = useRef(handleQuestClick);
+  questClickRef.current = handleQuestClick;
+  const questsRef = useRef(quests);
+  questsRef.current = quests;
+  useEffect(() => {
+    const onOpenDeck = (e: { questId: string }) => {
+      const quest = questsRef.current.find((q) => q.id === e.questId);
+      if (quest) questClickRef.current(quest);
+    };
+    eventBus.on('OPEN_DECK', onOpenDeck);
+    return () => eventBus.off('OPEN_DECK', onOpenDeck);
+  }, []);
 
   const handleMusicToggle = async () => {
     if (musicOn) {
@@ -156,40 +177,11 @@ function AppShell() {
     }
   };
 
-  // Deck view: a quest is open in the Cyber-Deck. The frame inside
-  // CyberDeckScreen switches coding mode on (world pause + adaptive music
-  // mix) on mount and resumes on unmount.
-  if (ready && deckOpen && selectedQuest) {
-    return (
-      <div
-        className="h-dvh overflow-hidden"
-        style={{
-          background: 'var(--bt-slate)',
-          color: 'var(--bt-bezel)',
-          fontFamily: '"Pixelify Sans", sans-serif',
-        }}
-      >
-        <CyberDeckScreen
-          quest={selectedQuest}
-          onClose={() => setDeckOpen(false)}
-          musicOn={musicOn}
-          onToggleMusic={() => void handleMusicToggle()}
-        />
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="min-h-screen"
-      style={{
-        background: 'var(--bt-slate)',
-        color: 'var(--bt-bezel)',
-        fontFamily: '"Pixelify Sans", sans-serif',
-      }}
-    >
-      {!ready && <BootOverlay />}
-
+  // Panel "beranda" Fase 1 (daftar quest + data save) — sekarang hidup
+  // sebagai overlay Misi di atas desa, dan sebagai halaman boot sebelum
+  // desa siap. Isi & perilakunya tidak berubah.
+  const homePanels = (
+    <>
       <header className="mx-auto flex w-full max-w-4xl flex-wrap items-end justify-between gap-4 px-4 pb-4 pt-8">
         <div>
           <h1
@@ -386,6 +378,105 @@ function AppShell() {
           )}
         </section>
       </main>
+    </>
+  );
+
+  // Boot belum selesai: halaman Fase 1 di balik BootOverlay (perilaku lama).
+  if (!ready) {
+    return (
+      <div
+        className="min-h-screen"
+        style={{
+          background: 'var(--bt-slate)',
+          color: 'var(--bt-bezel)',
+          fontFamily: '"Pixelify Sans", sans-serif',
+        }}
+      >
+        <BootOverlay />
+        {homePanels}
+      </div>
+    );
+  }
+
+  // Desa adalah rumah sekarang. Cyber-Deck dibuka sebagai lapisan di
+  // atasnya: instance Phaser TETAP HIDUP (disembunyikan, bukan dibongkar)
+  // sehingga posisi pemain & keadaan desa utuh saat deck ditutup. Frame
+  // deck sendiri menembakkan WORLD_PAUSE/WORLD_RESUME lewat setCodingMode
+  // saat mount/unmount — scene berhenti selama pemain berpikir.
+  return (
+    <div
+      className="relative h-dvh overflow-hidden"
+      style={{
+        background: 'var(--bt-slate)',
+        color: 'var(--bt-bezel)',
+        fontFamily: '"Pixelify Sans", sans-serif',
+      }}
+    >
+      <div
+        className="h-full"
+        style={{ visibility: deckOpen ? 'hidden' : 'visible' }}
+        aria-hidden={deckOpen}
+      >
+        <Suspense
+          fallback={
+            <div
+              className="flex h-full items-center justify-center"
+              style={{ background: '#1d2b1a' }}
+              role="status"
+            >
+              <p>Menyiapkan Desa Bit-Terra…</p>
+            </div>
+          }
+        >
+          <WorldScreen
+            musicOn={musicOn}
+            onToggleMusic={() => void handleMusicToggle()}
+            onOpenMissions={() => setPickerOpen(true)}
+          />
+        </Suspense>
+      </div>
+
+      {pickerOpen && !deckOpen && (
+        <div
+          className="absolute inset-0 z-40 overflow-y-auto"
+          style={{ background: 'rgba(10,13,18,0.78)' }}
+        >
+          <div
+            className="mx-auto my-4 w-full max-w-4xl border-4 sm:my-8"
+            style={{ borderColor: 'var(--bt-copper)', background: 'var(--bt-slate)' }}
+          >
+            <div className="flex justify-end px-4 pt-3">
+              <button
+                type="button"
+                onClick={() => setPickerOpen(false)}
+                className="border-2 px-3 py-1.5 text-sm font-semibold"
+                style={{ borderColor: 'var(--bt-bezel)', color: 'var(--bt-bezel)' }}
+              >
+                Kembali ke Desa
+              </button>
+            </div>
+            {homePanels}
+          </div>
+        </div>
+      )}
+
+      {deckOpen && selectedQuest && (
+        <div
+          className="absolute inset-0 z-50 h-dvh overflow-hidden"
+          style={{
+            background: 'var(--bt-slate)',
+            color: 'var(--bt-bezel)',
+            fontFamily: '"Pixelify Sans", sans-serif',
+          }}
+        >
+          <CyberDeckScreen
+            quest={selectedQuest}
+            onClose={() => setDeckOpen(false)}
+            musicOn={musicOn}
+            onToggleMusic={() => void handleMusicToggle()}
+          />
+        </div>
+      )}
     </div>
   );
 }

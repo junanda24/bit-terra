@@ -7,6 +7,9 @@
 html, body { background: var(--bt-slate); }
 .pixelated { image-rendering: pixelated; }
 
+/* Kanvas dunia Phaser (Fase 2): piksel chunky, jangan dihaluskan browser. */
+.bt-world-canvas canvas { image-rendering: pixelated; display: block; }
+
 /* Fokus keyboard harus TERLIHAT di semua kontrol (audit UI F-04: tuas RUN
    memakai outline-none tanpa pengganti). */
 :focus-visible {

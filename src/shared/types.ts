@@ -84,6 +84,14 @@ export interface GameEvents {
   QUEST_FUNNY_FAIL: { questId: string; reactionKey: string };
   WORLD_PAUSE: undefined;
   WORLD_RESUME: undefined;
+  /** Fase 2: dunia (Phaser) meminta UI membuka Cyber-Deck untuk quest ini. */
+  OPEN_DECK: { questId: string };
+  /** Fase 2: satu wilayah desa selesai diperbaiki oleh progres pemain. */
+  WORLD_REPAIR: { area: string };
+  /** Fase 2: dunia meminta UI menampilkan dialog NPC/papan petunjuk. */
+  WORLD_DIALOGUE: { name: string; lines: string[] };
+  /** Fase 2: label petunjuk interaksi terdekat (null = tidak ada). */
+  WORLD_PROMPT: { text: string | null };
   FOCUS_CHANGED: { focus: number };
   PIKO_SAY: { text: string; mood: PikoMood };
 }
