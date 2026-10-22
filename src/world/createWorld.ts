@@ -9,14 +9,19 @@
  * belum selesai -> OPEN_DECK; sisanya -> dialog dunia via WORLD_DIALOGUE.
  */
 import { eventBus } from '../core/bridge/eventBus';
+import { isQuestUnlocked, lockBlockerId } from '../core/progression';
+import { ALL_QUESTS } from '../content/quests/index';
 import { noteWorldPause, noteWorldResume, worldBridge } from './bridgeState';
-import { getWorldDialogue } from './npcDialogues';
+import { getBrainFogDialogue, getWorldDialogue } from './npcDialogues';
 import type { Interactable } from './mapData';
 
 export interface WorldHandle {
   setCompletedQuests: (completedQuests: readonly string[]) => void;
   destroy: () => void;
 }
+
+/** Urutan rantai progresi dari indeks konten (sumber kebenaran picker juga). */
+const QUEST_ORDER: readonly string[] = ALL_QUESTS.map((q) => q.id);
 
 function handleInteract(target: Interactable): void {
   const completed = worldBridge.completedQuests;
@@ -27,6 +32,17 @@ function handleInteract(target: Interactable): void {
         eventBus.emit('WORLD_DIALOGUE', { name: dlg.name, lines: dlg.lines });
         return;
       }
+    }
+    // Progresi berurutan (Fase 3): jangkar quest yang belum terbuka tidak
+    // membuka deck — Kabut Otak menolak dengan lembut dan menyebut quest
+    // yang harus diselesaikan lebih dulu.
+    if (!isQuestUnlocked(target.questId, QUEST_ORDER, completed)) {
+      const blockerId = lockBlockerId(target.questId, QUEST_ORDER, completed);
+      const blockerTitle =
+        ALL_QUESTS.find((q) => q.id === blockerId)?.title ?? 'misi sebelumnya';
+      const dlg = getBrainFogDialogue(blockerTitle);
+      eventBus.emit('WORLD_DIALOGUE', { name: dlg.name, lines: dlg.lines });
+      return;
     }
     eventBus.emit('OPEN_DECK', { questId: target.questId });
     return;

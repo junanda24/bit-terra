@@ -380,67 +380,67 @@ export const INTERACTABLES: Interactable[] = [
     id: 'mother_roots',
     tileX: 19,
     tileY: 3,
-    kind: 'flavor',
+    kind: 'quest',
     prompt: 'Sentuh akar Pohon Induk',
-    dialogueId: 'great_commit',
-    futureQuestId: 'quest_08_great_commit',
+    questId: 'quest_08_great_commit',
+    doneDialogueId: 'great_commit_done',
   },
   {
     id: 'sluice',
     tileX: 12,
     tileY: 22,
-    kind: 'flavor',
-    prompt: 'Lihat pintu air',
+    kind: 'quest',
+    prompt: 'Periksa pintu air',
+    questId: 'quest_03_pintu_air',
+    doneDialogueId: 'sluice',
     dialogueId: 'sluice',
-    futureQuestId: 'quest_03_pintu_air',
   },
   {
     id: 'farm',
     tileX: 32,
     tileY: 15,
-    kind: 'flavor',
-    prompt: 'Lihat ladang desa',
-    dialogueId: 'farm',
-    futureQuestId: 'quest_04_urutan_panen',
+    kind: 'quest',
+    prompt: 'Lihat papan catatan panen',
+    questId: 'quest_04_urutan_panen',
+    doneDialogueId: 'flora_fields_done',
   },
   {
     id: 'conveyor',
     tileX: 31,
     tileY: 26,
-    kind: 'flavor',
+    kind: 'quest',
     prompt: 'Lihat gudang konveyor',
+    questId: 'quest_05_konveyor_roti',
+    doneDialogueId: 'conveyor',
     dialogueId: 'conveyor',
-    futureQuestId: 'quest_05_konveyor_roti',
   },
   {
     id: 'festival',
     tileX: 20,
     tileY: 26,
-    kind: 'flavor',
-    prompt: 'Lihat plaza festival',
-    dialogueId: 'festival',
-    futureQuestId: 'quest_06_kas_festival',
+    kind: 'quest',
+    prompt: 'Periksa kas Festival Panen',
+    questId: 'quest_06_kas_festival',
+    doneDialogueId: 'festival_done',
   },
   {
     id: 'root_maze',
     tileX: 38,
     tileY: 2,
-    kind: 'flavor',
-    prompt: 'Lihat gerbang akar',
+    kind: 'quest',
+    prompt: 'Masuki gerbang akar',
+    questId: 'quest_07_jembatan_kristal',
+    doneDialogueId: 'root_maze',
     dialogueId: 'root_maze',
-    futureQuestId: 'quest_07_jembatan_kristal',
   },
 ];
 
-/** Quest Fase 3 yang belum terbit — masing-masing wajib punya jangkar rasa. */
-export const FUTURE_QUEST_IDS = [
-  'quest_03_pintu_air',
-  'quest_04_urutan_panen',
-  'quest_05_konveyor_roti',
-  'quest_06_kas_festival',
-  'quest_07_jembatan_kristal',
-  'quest_08_great_commit',
-] as const;
+/**
+ * Semua quest Fase 3 sudah terbit (Tahap C1 + C2): tidak ada lagi
+ * jangkar rasa yang menunggu quest-nya. Daftar ini dipertahankan kosong
+ * supaya tes registri tetap membuktikan tidak ada anchor yatim.
+ */
+export const FUTURE_QUEST_IDS = [] as const;
 
 // ---------------------------------------------------------------- grid
 

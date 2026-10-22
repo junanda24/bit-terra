@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
-import type { LintError, QuestDefinition, SqlRunResult } from '../../shared/types';
+import type {
+  BotScenario,
+  LintError,
+  QuestDefinition,
+  SqlRunResult,
+} from '../../shared/types';
 import { eventBus } from '../../core/bridge/eventBus';
 import { useGameStore } from '../../core/bridge/gameStore';
 import { SoundController } from '../../core/audio/SoundController';
@@ -18,12 +23,22 @@ import { FriendlyError } from '../../sandbox/script/FriendlyErrorTranslator';
 import { createBotApi } from '../../sandbox/script/BotApiBindings';
 import { logError } from '../../app/errorLog';
 import { nextStepWithTimeout, STEP_WATCHDOG_MS } from './stepWatchdog';
+import {
+  assessFinalTableState,
+  hybridPhaseCodeKey,
+  hybridPhaseInitialCode,
+  type HybridPhase,
+} from './hybridLogic';
 import { CyberDeckFrame, type LampState } from './CyberDeckFrame';
 import { RunLever } from './RunLever';
 import { InteractiveEditor, type InteractiveEditorHandle } from './InteractiveEditor';
 import { SqlTableVisualizer } from '../visualizer/SqlTableVisualizer';
 import { BotGridStage, type BotPose } from '../visualizer/BotGridStage';
-import { botQuestVerdict } from '../visualizer/botStageLogic';
+import {
+  botQuestVerdict,
+  botScenarioFailKey,
+  evaluateBotExpectation,
+} from '../visualizer/botStageLogic';
 import { PikoMascotWidget } from '../visualizer/PikoMascotWidget';
 import { FocusBar } from '../hud/FocusBar';
 import { CartridgeBar } from '../hud/CartridgeBar';
@@ -52,7 +67,7 @@ const BASE_BOT_FUNCTIONS = [
   'gate.close',
 ];
 
-function allowedBotFunctions(quest: QuestDefinition): string[] {
+export function allowedBotFunctions(quest: QuestDefinition): string[] {
   const set = new Set(BASE_BOT_FUNCTIONS);
   for (const cart of quest.unlockedCartridges) {
     // Sumber kebenaran pemilik fungsi adalah SNIPPET cartridge itu sendiri:
@@ -116,7 +131,10 @@ export interface CyberDeckScreenProps {
  * diagnosis linter, F-07) → SQL: query dijalankan, dipindai, dicocokkan
  * ResultDiffChecker; Bot: StepInterpreter berjalan baris demi baris dan
  * dunia grid bergerak sinkron, verdict dari botQuestVerdict (urutan boot
- * ditegakkan dunia, F-01/F-02). Gagal tidak pernah menakutkan: reaksi lucu
+ * ditegakkan dunia, F-01/F-02). Quest HYBRID (Fase 3 Q8) berjalan dua fase
+ * di layar ini: fase 1 SQL dinilai dari KEADAAN AKHIR tabel
+ * (expectedFinalTableState + hybridLogic), lalu fase 2 Bot memakai jalur
+ * bot biasa; indikator fase tampil eksplisit di header. Gagal tidak pernah menakutkan: reaksi lucu
  * dari data quest + dialog hasil karya penulis + Piko yang bicara (F-03).
  * Fokus hanya dipotong untuk kesalahan konsep yang lolos linter pada kode
  * yang sudah diubah pemain (F-04/F-09); quest tuntas mengisinya kembali.
@@ -150,6 +168,8 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   // kecil kolom kiri & deck bergantian lewat tab mobile.
   const [sideTab, setSideTab] = useState<'cerita' | 'kode'>('cerita');
   const [mobileTab, setMobileTab] = useState<'deck' | 'piko'>('deck');
+  // Fase aktif quest HYBRID (1 = SQL, 2 = Bot). Quest non-HYBRID selalu 1.
+  const [hybridPhase, setHybridPhase] = useState<HybridPhase>(1);
 
   const codeRef = useRef(code);
   const runningRef = useRef(false);
@@ -170,15 +190,21 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   const editorRef = useRef<InteractiveEditorHandle | null>(null);
   const experimentNotedRef = useRef(false);
 
-  const isBot = quest.mode === 'BOT_SCRIPT';
+  const isHybrid = quest.mode === 'HYBRID';
+  // HYBRID dua fase dalam satu layar: fase 1 diperlakukan persis quest SQL,
+  // fase 2 persis quest BOT_SCRIPT — semua percabangan isBot yang sudah ada
+  // (layout, linter, tuas RUN, verdict) mengikuti fase aktif.
+  const isBot = quest.mode === 'BOT_SCRIPT' || (isHybrid && hybridPhase === 2);
 
   const setCode = useCallback(
     (next: string) => {
       codeRef.current = next;
       setCodeState(next);
-      useGameStore.getState().setCode(quest.id, next);
+      // Kode dua fase HYBRID disimpan di kunci terpisah (hybridLogic).
+      const key = isHybrid ? hybridPhaseCodeKey(quest.id, hybridPhase) : quest.id;
+      useGameStore.getState().setCode(key, next);
     },
-    [quest.id],
+    [quest.id, isHybrid, hybridPhase],
   );
 
   /* ---------------- urutan dialog (F-03) ---------------- */
@@ -287,6 +313,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     setIntroSeen(false);
     setSideTab('cerita');
     setMobileTab('deck');
+    setHybridPhase(1);
     // Dialog intro hasil karya penulis diputar sebagai MODAL pembuka saat
     // deck quest dibuka (surat Kakek untuk Q1, kepanikan Pak Rani untuk
     // Q2) — F-03 + audit layout (CATATAN KAKEK tidak lagi memakan ruang
@@ -407,6 +434,33 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     [quest, sayPiko, startDialogue],
   );
 
+  /* ---------------- transisi fase HYBRID ---------------- */
+  // Fase 1 (SQL) lulus -> fase 2 (Bot) dimulai di layar yang sama: kode
+  // fase 2 dimuat dari kunci simpannya sendiri, panggung bot disiapkan,
+  // dan dialog transisi hasil karya penulis diputar. Database fase 1
+  // TIDAK dibongkar — runner yang sama tetap hidup sampai deck ditutup.
+  const goHybridPhase2 = useCallback(() => {
+    SoundController.playSFX('success');
+    sayPiko(
+      'Fase 1 tuntas — data akarnya bersih. Sekarang fase 2: antarkan Piko ke terminal kristal.',
+      'happy',
+    );
+    startDialogue(getQuestDialogue(quest.id, 'phase2'));
+    const saved = useGameStore.getState().codeByQuest[hybridPhaseCodeKey(quest.id, 2)];
+    const next = saved ?? hybridPhaseInitialCode(quest, 2);
+    codeRef.current = next;
+    setCodeState(next);
+    setLintErrors([]);
+    setSqlResult(null);
+    setScanning(false);
+    setCurrentLine(null);
+    pendingResultRef.current = null;
+    poseRef.current = null;
+    setBotResetKey((k) => k + 1);
+    useGameStore.getState().setCurrentQuest(quest.id, 'BOT_SCRIPT');
+    setHybridPhase(2);
+  }, [quest, sayPiko, startDialogue]);
+
   /* ---------------- eksekusi SQL ---------------- */
   const finalizeSql = useCallback(() => {
     setScanning(false);
@@ -425,13 +479,49 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
       funnyFail('rolled_back', SQL_ROLLBACK_NARRATION);
       return;
     }
+    // Quest bertulis dengan verdict KEADAAN AKHIR (HYBRID fase 1, Q8):
+    // yang dinilai bukan output SELECT pemain, melainkan isi tabel sumber
+    // sesudah perbaikannya — baris rusak harus sembuh DAN baris sehat
+    // tidak boleh berubah (logika murni: assessFinalTableState).
+    if (quest.expectedFinalTableState) {
+      const runner = runnerRef.current;
+      let finalRows: Record<string, unknown>[] = [];
+      try {
+        if (runner && quest.sqlSourceTable) {
+          finalRows = runner.runQuery(
+            `SELECT * FROM "${quest.sqlSourceTable}"`,
+          ).rows;
+        }
+      } catch {
+        finalRows = [];
+      }
+      const assessment = assessFinalTableState(
+        finalRows,
+        quest.expectedFinalTableState,
+      );
+      if (assessment.pass) {
+        // Quest HYBRID lanjut ke fase Bot; quest tulis non-HYBRID (kalau
+        // kelak ada) langsung tuntas di sini.
+        if (isHybrid && hybridPhase === 1) {
+          goHybridPhase2();
+        } else {
+          successPath();
+        }
+        return;
+      }
+      funnyFail(assessment.reactionKey);
+      return;
+    }
     const expected = quest.expectedSqlResult;
     if (!expected) {
       successPath();
       return;
     }
     const diff = ResultDiffChecker.check(result, expected, {
-      orderMatters: /\border\s+by\b/i.test(codeRef.current),
+      // Urutan hanya dinilai bila quest-nya memang mengajarkan urutan
+      // (Q4 ORDER BY). ORDER BY sukarela di quest lain tidak lagi bisa
+      // menggagalkan jawaban yang isinya benar.
+      orderMatters: quest.sqlOrderMatters === true,
     });
     if (diff.pass) {
       successPath();
@@ -451,7 +541,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
             ? 'wrong_column'
             : 'wrong_result';
     funnyFail(key);
-  }, [quest, successPath, funnyFail]);
+  }, [quest, successPath, funnyFail, isHybrid, hybridPhase, goHybridPhase2]);
 
   const runSql = useCallback(() => {
     const runner = runnerRef.current;
@@ -520,86 +610,144 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   /* ---------------- eksekusi Bot ---------------- */
   const runBot = useCallback(async () => {
     const token = ++runTokenRef.current;
-    setBotResetKey((k) => k + 1);
-    await sleep(240);
-    if (runTokenRef.current !== token) return;
-    const registry = createBotApi(allowedBotFunctions(quest), {});
-    const iterator = StepInterpreter.run(codeRef.current, registry);
-    let watchdogStopped = false;
+    const scenarios = quest.botScenarios ?? [];
+
+    type PassOutcome = 'done' | 'error' | 'watchdog' | 'stale';
+    // Satu babak eksekusi interpreter melawan satu dunia segar (panggung
+    // di-reset di awal babak). Untuk quest tanpa skenario, inilah seluruh
+    // run — perilaku historisnya dipertahankan persis. Untuk quest
+    // berskenario (Q3), babak diulang per skenario dengan sensor berbeda
+    // dan Piko menarasikan uji ulangnya di antara babak.
+    const runPass = async (scenario: BotScenario | null): Promise<PassOutcome> => {
+      setBotResetKey((k) => k + 1);
+      await sleep(scenario ? 420 : 240);
+      if (runTokenRef.current !== token) return 'stale';
+      if (scenario) sayPiko(scenario.label, 'normal');
+      // Registry perekam + objek dunia yang boleh DIBACA pemain: sensor
+      // mengikuti setup skenario babak ini; gate adalah cermin hidup
+      // supaya bacaan gate.isOpen jujur terhadap gate.open/close pemain.
+      // Perubahan dunia yang sesungguhnya tetap digerakkan event
+      // BOT_ACTION ke reducer panggung (satu sumber semantik).
+      const gateMirror = { isOpen: false };
+      const registry = createBotApi(allowedBotFunctions(quest), {
+        functions: {
+          'gate.open': () => {
+            gateMirror.isOpen = true;
+          },
+          'gate.close': () => {
+            gateMirror.isOpen = false;
+          },
+        },
+        objects: {
+          sensor: { soilMoisture: scenario?.setup.soilMoisture ?? 30 },
+          gate: gateMirror,
+        },
+      });
+      const iterator = StepInterpreter.run(codeRef.current, registry);
+      try {
+        for (;;) {
+          if (runTokenRef.current !== token) {
+            void iterator.return(undefined).catch(() => undefined);
+            return 'stale';
+          }
+          // Watchdog (BLUEPRINT §7): kalau satu langkah tidak kunjung
+          // datang (await patologis di interpreter), hentikan larian
+          // dengan bersih daripada membiarkan tuas RUN terkunci selamanya.
+          // Loop sinkron tak hingga sudah dibatasi LoopGuard 500.
+          const outcome = await nextStepWithTimeout(iterator.next(), STEP_WATCHDOG_MS);
+          if (outcome.timeout) {
+            console.error(
+              `[BitTerra] Watchdog: eksekusi bot dihentikan — ${STEP_WATCHDOG_MS}ms tanpa StepEvent.`,
+            );
+            logError(
+              new Error(
+                `Watchdog menghentikan eksekusi bot quest ${quest.id}: tidak ada StepEvent selama ${STEP_WATCHDOG_MS}ms.`,
+              ),
+              'watchdog',
+            );
+            void iterator.return(undefined).catch(() => undefined);
+            return 'watchdog';
+          }
+          if (outcome.result.done) break;
+          const ev = outcome.result.value;
+          setCurrentLine(ev.line);
+          eventBus.emit('STEP_HIGHLIGHT', { line: ev.line });
+          if (ev.kind === 'call' && ev.action) {
+            eventBus.emit('BOT_ACTION', {
+              action: ev.action,
+              args: ev.args ?? [],
+              line: ev.line,
+            });
+            await sleep(430);
+          } else if (ev.kind !== 'done') {
+            await sleep(80);
+          }
+        }
+      } catch (err) {
+        if (err instanceof FriendlyError) {
+          // Pesan + saran ikut tampil — diagnosis tidak boleh terpotong (F-07).
+          funnyFail(
+            'interpreter_error',
+            err.suggestion ? `${err.message} ${err.suggestion}` : err.message,
+          );
+        } else {
+          console.error('[BitTerra] StepInterpreter gagal:', err);
+          funnyFail(
+            'interpreter_error',
+            'Piko berhenti di tengah jalan dan menggaruk antenanya. Ada perintah yang belum ia mengerti — periksa lagi barisnya pelan-pelan.',
+          );
+        }
+        return 'error';
+      }
+      return 'done';
+    };
+
     try {
-      for (;;) {
-        if (runTokenRef.current !== token) {
-          void iterator.return(undefined).catch(() => undefined);
+      const passCount = scenarios.length > 0 ? scenarios.length : 1;
+      for (let i = 0; i < passCount; i++) {
+        const scenario = scenarios[i] ?? null;
+        const outcome = await runPass(scenario);
+        if (outcome === 'stale' || outcome === 'error') return;
+        if (outcome === 'watchdog') {
+          // Penghentian oleh sistem, BUKAN kesalahan pemain: fokus tidak
+          // dikurangi, tidak ada reaksi gagal — Piko menjelaskan jujur.
+          sayPiko(
+            'Piko menghentikan jalannya program karena terlalu lama tidak ada langkah baru. Ini bukan salahmu — coba jalankan lagi; catatannya sudah tersimpan di log error.',
+            'confused',
+          );
           return;
         }
-        // Watchdog (BLUEPRINT §7): kalau satu langkah tidak kunjung datang
-        // (await patologis di interpreter), hentikan larian dengan bersih
-        // daripada membiarkan tuas RUN terkunci selamanya. Loop sinkron
-        // tak hingga sudah dibatasi LoopGuard 500 di interpreter.
-        const outcome = await nextStepWithTimeout(iterator.next(), STEP_WATCHDOG_MS);
-        if (outcome.timeout) {
-          watchdogStopped = true;
-          console.error(
-            `[BitTerra] Watchdog: eksekusi bot dihentikan — ${STEP_WATCHDOG_MS}ms tanpa StepEvent.`,
-          );
-          logError(
-            new Error(
-              `Watchdog menghentikan eksekusi bot quest ${quest.id}: tidak ada StepEvent selama ${STEP_WATCHDOG_MS}ms.`,
-            ),
-            'watchdog',
-          );
-          void iterator.return(undefined).catch(() => undefined);
-          break;
-        }
-        if (outcome.result.done) break;
-        const ev = outcome.result.value;
-        setCurrentLine(ev.line);
-        eventBus.emit('STEP_HIGHLIGHT', { line: ev.line });
-        if (ev.kind === 'call' && ev.action) {
-          eventBus.emit('BOT_ACTION', {
-            action: ev.action,
-            args: ev.args ?? [],
-            line: ev.line,
-          });
-          await sleep(430);
-        } else if (ev.kind !== 'done') {
-          await sleep(80);
+        if (scenario) {
+          // Beri panggung waktu menuntaskan animasi langkah terakhir,
+          // lalu nilai keadaan akhirnya terhadap harapan skenario ini.
+          await sleep(300);
+          const pose = poseRef.current;
+          const check = pose
+            ? evaluateBotExpectation(pose, scenario.expected)
+            : { pass: false, mismatches: ['position'] };
+          if (!check.pass) {
+            funnyFail(
+              scenario.failReactionKey ??
+                (pose ? botScenarioFailKey(pose, scenario.expected) : 'wrong_result'),
+            );
+            return;
+          }
         }
       }
-    } catch (err) {
-      if (err instanceof FriendlyError) {
-        // Pesan + saran ikut tampil — diagnosis tidak boleh terpotong (F-07).
-        funnyFail(
-          'interpreter_error',
-          err.suggestion ? `${err.message} ${err.suggestion}` : err.message,
-        );
-      } else {
-        console.error('[BitTerra] StepInterpreter gagal:', err);
-        funnyFail(
-          'interpreter_error',
-          'Piko berhenti di tengah jalan dan menggaruk antenanya. Ada perintah yang belum ia mengerti — periksa lagi barisnya pelan-pelan.',
-        );
-      }
-      return;
     } finally {
       setCurrentLine(null);
       eventBus.emit('STEP_HIGHLIGHT', { line: null });
       runningRef.current = false;
       setRunning(false);
     }
-    if (watchdogStopped) {
-      // Penghentian oleh sistem, BUKAN kesalahan pemain: fokus tidak
-      // dikurangi, tidak ada reaksi gagal — Piko menjelaskan dengan jujur.
-      sayPiko(
-        'Piko menghentikan jalannya program karena terlalu lama tidak ada langkah baru. Ini bukan salahmu — coba jalankan lagi; catatannya sudah tersimpan di log error.',
-        'confused',
-      );
+    // Semua skenario lulus harapannya → quest tuntas.
+    if (scenarios.length > 0) {
+      successPath();
       return;
     }
     await sleep(140);
     const pose = poseRef.current;
-    const targets = quest.botWorldSetup?.targets ?? [];
-    if (targets.length === 0 || !pose) {
+    if (!quest.botWorldSetup || !pose) {
       successPath();
       return;
     }
@@ -607,7 +755,9 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     // ditegakkan oleh panggung (aksi saat tertidur fizzle), tabrakan adalah
     // latch per run dari kejadian tabrak sungguhan, dan charge di tempat
     // gelap punya kuncinya sendiri — tidak ada lagi rantai if yang menelan
-    // semua kegagalan menjadi "tabrakan" (F-01/F-02).
+    // semua kegagalan menjadi "tabrakan" (F-01/F-02). Setup TANPA target
+    // klasik (quest berpeti/bertanaman) tetap dinilai di sini lewat
+    // cabang verdict-nya masing-masing — bukan lagi sukses otomatis.
     const verdict = botQuestVerdict(pose, quest.onFailFunnyReactions);
     if (verdict.kind === 'success') {
       successPath();
@@ -634,10 +784,13 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
       );
       return;
     }
-    // Snapshot kebijakan fokus untuk run ini (F-04/F-09).
+    // Snapshot kebijakan fokus untuk run ini (F-04/F-09). Untuk HYBRID,
+    // bandingkan dengan kerangka awal FASE yang sedang aktif.
     deductFocusRef.current = shouldDeductFocusOnFail({
       code: codeRef.current,
-      initialCode: quest.initialCode,
+      initialCode: isHybrid
+        ? hybridPhaseInitialCode(quest, hybridPhase)
+        : quest.initialCode,
       lintErrors: freshLint,
     });
     runningRef.current = true;
@@ -647,7 +800,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     } else {
       runSql();
     }
-  }, [isBot, runBot, runSql, runLint, quest.initialCode, sayPiko]);
+  }, [isBot, runBot, runSql, runLint, quest, isHybrid, hybridPhase, sayPiko]);
 
   const executeRef = useRef(execute);
   executeRef.current = execute;
@@ -706,6 +859,21 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   // baris (audit layout F), error lain apa adanya.
   const lintItems = summarizeLintErrors(lintErrors);
 
+  // Cartridge yang tampil mengikuti fase aktif quest HYBRID.
+  const activeCartridges =
+    isHybrid && hybridPhase === 2
+      ? (quest.hybridBotCartridges ?? quest.unlockedCartridges)
+      : quest.unlockedCartridges;
+
+  // Label mode di header: quest HYBRID menampilkan indikator fasenya
+  // secara eksplisit ("Fase 1 dari 2 — Perbaiki Data").
+  const modeBadgeLabel = isHybrid
+    ? (quest.hybridPhaseLabels?.[hybridPhase - 1] ??
+      (hybridPhase === 1 ? 'Fase 1 dari 2' : 'Fase 2 dari 2'))
+    : isBot
+      ? 'Program Bot'
+      : 'Query SQL';
+
   return (
     <div className="bt-deck-root relative flex h-full min-h-0 w-full flex-col gap-3 p-4">
       {/* Header tunggal (audit layout D): kembali + judul misi + musik dalam
@@ -731,7 +899,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
             border: '1.5px solid rgba(0,0,0,0.5)',
           }}
         >
-          {isBot ? 'Program Bot' : 'Query SQL'}
+          {modeBadgeLabel}
         </span>
         <span
           className="text-[13px] font-semibold uppercase tracking-[0.14em]"
@@ -923,7 +1091,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
                       borderColor: 'rgba(216,204,184,0.16)',
                     }}
                   >
-                    Modul di quest ini: {quest.unlockedCartridges.join(', ')}
+                    Modul di quest ini: {activeCartridges.join(', ')}
                   </p>
                 </div>
               )}
@@ -934,7 +1102,16 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
             <PixelButton variant="moss" onClick={handleHint}>
               Minta Petunjuk
             </PixelButton>
-            <PixelButton variant="slate" onClick={() => setCode(quest.initialCode)}>
+            <PixelButton
+              variant="slate"
+              onClick={() =>
+                setCode(
+                  isHybrid
+                    ? hybridPhaseInitialCode(quest, hybridPhase)
+                    : quest.initialCode,
+                )
+              }
+            >
               Ulangi Kode Awal
             </PixelButton>
           </div>
@@ -956,7 +1133,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
                 style={{ borderColor: 'rgba(216,204,184,0.14)', backgroundColor: '#10131a' }}
               >
                 <CartridgeBar
-                  cartridges={quest.unlockedCartridges}
+                  cartridges={activeCartridges}
                   onInsert={handleInsert}
                   disabled={running}
                 />
@@ -986,7 +1163,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
                   >
                     <BotGridStage
                       setup={quest.botWorldSetup}
-                      startPos={[0, 2]}
+                      startPos={quest.botWorldSetup.startPos ?? [0, 2]}
                       resetKey={botResetKey}
                       onPoseChange={(pose) => {
                         poseRef.current = pose;

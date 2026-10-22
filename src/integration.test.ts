@@ -14,7 +14,9 @@ import type { StepEvent } from './shared/types';
 
 describe('konten quest Fase 1', () => {
   it('ALL_QUESTS memuat Q1 + Q2 dan getQuestById menemukannya', () => {
-    expect(ALL_QUESTS).toHaveLength(2);
+    // Fase 3 menambah quest lain ke indeks yang sama; tes ini hanya
+    // menjamin dua quest pertama tetap terdaftar dan bisa ditemukan.
+    expect(ALL_QUESTS.length).toBeGreaterThanOrEqual(2);
     expect(getQuestById(quest01BangunPiko.id)?.title).toBe('Bangun, Piko!');
     expect(getQuestById(quest02DombaTersesat.id)?.title).toBe('Domba yang Tersesat');
     expect(getQuestById('tidak-ada')).toBeUndefined();

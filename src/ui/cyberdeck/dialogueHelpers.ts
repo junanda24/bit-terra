@@ -56,6 +56,19 @@ const WORLD_EVENT_TEXT: Record<string, string> = {
   WORKSHOP_LIGHT_ON: 'Lampu bengkel menyala lagi',
   SHEEP_SPOTTED: 'Posisi ketiga domba ditemukan',
   SHEEP_RETURN: 'Domba-domba berlari pulang ke kandang',
+  HARVEST_RANKED: 'Urutan panen terbaik desa akhirnya jelas',
+  FIELDS_TIDIED: 'Baris-baris ladang kembali rapi',
+  FESTIVAL_CASH_BALANCED: 'Kas Festival Panen cocok sampai rupiah terakhir',
+  STALL_LIST_CLEAR: 'Daftar penyewa stan festival jelas untuk semua warga',
+  ROOT_DATABASE_RESTORED: 'Basis data akar Pohon Induk pulih sepenuhnya',
+  MOTHER_TREE_BLOOMS: 'Pohon Induk berbunga lagi di tengah desa',
+  OMNICLOUD_RETREATS: 'OmniCloud menarik tawarannya dan pergi dengan sopan',
+  SLUICE_FLOWS_AGAIN: 'Pintu air mengalir tertib mengikuti aturanmu',
+  FIELDS_TURN_GREEN: 'Ladang desa menghijau lagi',
+  CONVEYOR_RUNS_AGAIN: 'Ban berjalan gudang roti hidup lagi',
+  BREAD_CRATES_LOADED: 'Ketiga peti roti sampai di rak pemuatan',
+  MAZE_ROOTS_RECEDE: 'Akar-akar labirin minggir memberi jalan',
+  CRYSTAL_BRIDGE_PATH_OPENS: 'Jalan menuju Jembatan Kristal terbuka lagi',
 };
 
 /** Kode world event → kalimat manusiawi (fallback: rapikan kode mentahnya). */

@@ -90,6 +90,100 @@ function SleepZzz() {
   );
 }
 
+/** Tetesan segar: water() baru saja menyiram tanaman betulan (Q7). */
+function DropletPop() {
+  return (
+    <motion.div
+      aria-hidden
+      className="absolute -top-[42%] left-1/2 z-20 -translate-x-1/2"
+      initial={{ opacity: 0, y: -3, scale: 0.7 }}
+      animate={{ opacity: [0, 1, 0.9], y: 2, scale: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.55, ease: 'easeOut' }}
+    >
+      <svg viewBox="0 0 24 24" className="h-5 w-5">
+        <path
+          d="M12 3 C12 3 5.5 11 5.5 15 a6.5 6.5 0 0 0 13 0 C18.5 11 12 3 12 3 Z"
+          fill="#7cc4de"
+          stroke="#3b82a6"
+          strokeWidth="1.6"
+        />
+      </svg>
+    </motion.div>
+  );
+}
+
+/** Percikan percuma: water() di petak tanpa tanaman (Q7). */
+function SplashPop() {
+  return (
+    <motion.div
+      aria-hidden
+      className="absolute -bottom-[16%] left-1/2 z-20 -translate-x-1/2"
+      initial={{ opacity: 0, scaleX: 0.5 }}
+      animate={{ opacity: [0, 0.9, 0.5], scaleX: 1.15 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.6, ease: 'easeOut' }}
+    >
+      <svg viewBox="0 0 32 10" className="h-2.5 w-8">
+        <ellipse cx="16" cy="5" rx="13" ry="3.6" fill="none" stroke="#7cc4de" strokeWidth="1.8" />
+        <ellipse cx="16" cy="5" rx="6" ry="1.8" fill="none" stroke="#3b82a6" strokeWidth="1.4" />
+      </svg>
+    </motion.div>
+  );
+}
+
+/** Peti roti yang bisa didorong (Q5): kayu terang + tanda roti di tutupnya. */
+function BreadCrate() {
+  return (
+    <div
+      className="relative h-[84%] w-[84%] rounded-[4px]"
+      style={{
+        backgroundColor: '#c98d4e',
+        border: '3px solid #7a4a1c',
+        boxShadow: 'inset 0 3px 0 rgba(255,255,255,0.3), 0 3px 4px rgba(0,0,0,0.45)',
+      }}
+    >
+      <svg viewBox="0 0 40 24" className="absolute inset-x-[16%] top-[22%] h-[56%] w-[68%]" aria-hidden>
+        <path
+          d="M4 15 a8 7 0 0 1 3-6.6 A10 6 0 0 1 20 5 a10 6 0 0 1 13 3.4 A8 7 0 0 1 36 15 L36 18 L4 18 Z"
+          fill="#e8cf9f"
+          stroke="#7a4a1c"
+          strokeWidth="1.8"
+        />
+        <path d="M13 9 l3 4 M20 8 l3 4 M27 9 l3 4" stroke="#b8934a" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+}
+
+/** Tunas tanaman (Q7): kering = cokelat menekuk; tersiram = hijau segar. */
+function PlantSprout({ watered }: { watered: boolean }) {
+  return (
+    <div className="relative flex h-full w-full items-end justify-center">
+      <div
+        className="absolute bottom-[8%] h-[26%] w-[78%] rounded-[50%]"
+        style={{ backgroundColor: '#4a3520' }}
+      />
+      <svg viewBox="0 0 40 40" className="relative h-[86%] w-[86%]" aria-hidden>
+        {watered ? (
+          <g stroke="#3f7a3a" strokeWidth="2.6" fill="#5da24f">
+            <path d="M20 36 C20 28 20 20 20 13" fill="none" strokeLinecap="round" />
+            <path d="M20 22 C14 22 10 18 9 12 C15 12 19 15 20 22 Z" />
+            <path d="M20 18 C26 18 30 14 31 8 C25 8 21 11 20 18 Z" />
+            <circle cx="29" cy="26" r="2.2" fill="#7cc4de" stroke="none" />
+          </g>
+        ) : (
+          <g stroke="#8a6a48" strokeWidth="2.6" fill="#a8895c">
+            <path d="M20 36 C20 29 21 24 24 19" fill="none" strokeLinecap="round" />
+            <path d="M23 24 C17 26 12 24 10 19 C16 17 21 19 23 24 Z" />
+            <path d="M24 20 C29 18 33 19 35 23 C30 25 26 24 24 20 Z" />
+          </g>
+        )}
+      </svg>
+    </div>
+  );
+}
+
 /** Zap redup: charge dicoba di tempat gelap — ada percik, tidak ada cahaya. */
 function DimZap() {
   return (
@@ -196,10 +290,10 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
 
   // Sinyal visual sesaat padam sendiri.
   useEffect(() => {
-    if (!pose.dizzy && !pose.sleepFizzle && !pose.dimZap) return;
+    if (!pose.dizzy && !pose.sleepFizzle && !pose.dimZap && !pose.droplet && !pose.splash) return;
     const id = window.setTimeout(() => dispatch({ type: 'clear-transients' }), 1300);
     return () => window.clearTimeout(id);
-  }, [pose.dizzy, pose.sleepFizzle, pose.dimZap]);
+  }, [pose.dizzy, pose.sleepFizzle, pose.dimZap, pose.droplet, pose.splash]);
 
   useEffect(() => {
     const handleAction = ({ action, args }: { action: string; args: unknown[] }) => {
@@ -218,6 +312,8 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
 
   const cellPctW = 100 / cols;
   const cellPctH = 100 / rows;
+  const targetKind = setup.targetKind ?? 'sun';
+  const gardenFloor = (setup.plants?.length ?? 0) > 0;
 
   // Kotak panggung berasio grid TERKUNCI (audit layout B): dulu sel digambar
   // sebagai % dari kontainer panel yang tingginya arbitrer, jadi petak dan
@@ -248,17 +344,17 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
         className="relative select-none overflow-hidden"
         style={{ width: box.width, height: box.height }}
       >
-      {/* lantai papan kayu bengkel */}
+      {/* lantai: papan kayu bengkel, atau tanah kebun untuk quest bertanaman */}
       <div
         className="absolute inset-0"
         style={{
-          backgroundColor: '#241a12',
+          backgroundColor: gardenFloor ? '#22331d' : '#241a12',
           backgroundImage:
             'linear-gradient(rgba(216,204,184,0.13) 1px, transparent 1px), linear-gradient(90deg, rgba(216,204,184,0.13) 1px, transparent 1px)',
           backgroundSize: `${cellPctW}% ${cellPctH}%`,
         }}
       />
-      {/* petak cahaya matahari (target) */}
+      {/* petak target — gambarnya mengikuti targetKind setup */}
       {setup.targets.map(([x, y]) => (
         <motion.div
           key={`t-${x}-${y}`}
@@ -269,7 +365,9 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
             width: `${cellPctW}%`,
             height: `${cellPctH}%`,
             background:
-              'radial-gradient(circle at 50% 45%, rgba(244,180,27,0.5), rgba(244,180,27,0.12) 70%)',
+              targetKind === 'sun'
+                ? 'radial-gradient(circle at 50% 45%, rgba(244,180,27,0.5), rgba(244,180,27,0.12) 70%)'
+                : undefined,
           }}
           animate={reduceMotion ? { opacity: 1 } : { opacity: [0.85, 1, 0.85] }}
           transition={
@@ -278,9 +376,103 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
               : { duration: 2.4, repeat: Infinity, ease: 'easeInOut' }
           }
         >
-          <SunPatch />
+          {targetKind === 'sun' ? (
+            <SunPatch />
+          ) : targetKind === 'platform' ? (
+            <div
+              className="grid h-[76%] w-[76%] place-items-center rounded-[4px]"
+              style={{
+                backgroundColor: '#8a5a33',
+                border: '3px solid #c87d55',
+                boxShadow: 'inset 0 2px 0 rgba(255,255,255,0.25)',
+              }}
+            >
+              <div
+                className="h-[38%] w-[38%] rounded-full"
+                style={{ backgroundColor: '#f4b41b', border: '2px solid #7a4a1c' }}
+              />
+            </div>
+          ) : (
+            <div
+              className="grid h-[82%] w-[82%] place-items-center rounded-[4px]"
+              style={{ border: '3px dashed rgba(244,180,27,0.85)' }}
+            >
+              <svg viewBox="0 0 24 24" className="h-[46%] w-[46%]" aria-hidden>
+                <path
+                  d="M12 2.5 L14.6 9 L21.5 9.3 L16.2 13.6 L17.9 20.2 L12 16.4 L6.1 20.2 L7.8 13.6 L2.5 9.3 L9.4 9 Z"
+                  fill="rgba(244,180,27,0.5)"
+                  stroke="#f4b41b"
+                  strokeWidth="1.4"
+                />
+              </svg>
+            </div>
+          )}
         </motion.div>
       ))}
+      {/* tanaman (Q7): tunas kering/hijau di petak tanahnya */}
+      {(setup.plants ?? []).map(([x, y]) => (
+        <div
+          key={`p-${x}-${y}`}
+          className="absolute"
+          style={{
+            left: `${x * cellPctW}%`,
+            top: `${y * cellPctH}%`,
+            width: `${cellPctW}%`,
+            height: `${cellPctH}%`,
+          }}
+        >
+          <PlantSprout watered={pose.wateredPlants.includes(`${x},${y}`)} />
+        </div>
+      ))}
+      {/* pintu air (Q3): bilah terangkat saat gate terbuka + aliran di bawahnya */}
+      {setup.gateTile ? (
+        <div
+          className="absolute"
+          style={{
+            left: `${setup.gateTile[0] * cellPctW}%`,
+            top: `${setup.gateTile[1] * cellPctH}%`,
+            width: `${cellPctW}%`,
+            height: `${cellPctH}%`,
+          }}
+        >
+          <div className="relative h-full w-full overflow-hidden rounded-[3px]">
+            <div
+              className="absolute inset-y-0 left-0 w-[16%]"
+              style={{ backgroundColor: '#6e6259', borderRight: '2px solid #453b33' }}
+            />
+            <div
+              className="absolute inset-y-0 right-0 w-[16%]"
+              style={{ backgroundColor: '#6e6259', borderLeft: '2px solid #453b33' }}
+            />
+            {pose.gateOpen ? (
+              <motion.div
+                className="absolute inset-x-[16%] bottom-0 top-[46%]"
+                style={{
+                  background:
+                    'repeating-linear-gradient(180deg, rgba(124,196,222,0.85) 0 5px, rgba(59,130,166,0.85) 5px 10px)',
+                }}
+                animate={reduceMotion ? { opacity: 0.9 } : { opacity: [0.75, 1, 0.75] }}
+                transition={
+                  reduceMotion
+                    ? { duration: 0 }
+                    : { duration: 1.1, repeat: Infinity, ease: 'easeInOut' }
+                }
+              />
+            ) : null}
+            <div
+              className="absolute inset-x-[14%] top-0 h-[58%]"
+              style={{
+                backgroundColor: '#a85432',
+                border: '2px solid #66300f',
+                backgroundImage:
+                  'repeating-linear-gradient(90deg, transparent 0 10px, rgba(102,48,15,0.7) 10px 13px)',
+                transform: pose.gateOpen ? 'translateY(-72%)' : 'translateY(0)',
+                transition: 'transform 450ms ease-in-out',
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
       {/* rintangan: peti kayu */}
       {setup.obstacles.map(([x, y]) => (
         <div
@@ -305,6 +497,22 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
           />
         </div>
       ))}
+      {/* peti dorong (Q5): posisi dari pose reducer, ikut bergeser mulus */}
+      {pose.boxes.map(([x, y], i) => (
+        <motion.div
+          key={`b-${i}`}
+          className="absolute z-[5] grid place-items-center"
+          style={{ width: `${cellPctW}%`, height: `${cellPctH}%` }}
+          initial={false}
+          animate={{ left: `${x * cellPctW}%`, top: `${y * cellPctH}%` }}
+          transition={{
+            left: { type: 'spring', stiffness: 170, damping: 20 },
+            top: { type: 'spring', stiffness: 170, damping: 20 },
+          }}
+        >
+          <BreadCrate />
+        </motion.div>
+      ))}
       {/* token Piko */}
       <motion.div
         className="absolute z-10"
@@ -323,9 +531,30 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
       >
         <div className="relative h-full w-full">
           <MiniPiko awake={pose.awake} charged={pose.charged} />
+          {/* penunjuk arah hadap: segitiga tembaga di tepi token, berputar
+              mengikuti facing (0 timur → 1 selatan → 2 barat → 3 utara) */}
+          <div
+            aria-hidden
+            className="absolute inset-0"
+            style={{
+              transform: `rotate(${pose.facing * 90}deg)`,
+              transition: 'transform 220ms ease-in-out',
+            }}
+          >
+            <div
+              className="absolute right-[1%] top-1/2 h-0 w-0 -translate-y-1/2"
+              style={{
+                borderTop: '5px solid transparent',
+                borderBottom: '5px solid transparent',
+                borderLeft: '8px solid #c87d55',
+              }}
+            />
+          </div>
           <AnimatePresence>{pose.dizzy ? <DizzyStars key="dizzy" /> : null}</AnimatePresence>
           <AnimatePresence>{pose.sleepFizzle ? <SleepZzz key="zzz" /> : null}</AnimatePresence>
           <AnimatePresence>{pose.dimZap ? <DimZap key="zap" /> : null}</AnimatePresence>
+          <AnimatePresence>{pose.droplet ? <DropletPop key="drop" /> : null}</AnimatePresence>
+          <AnimatePresence>{pose.splash ? <SplashPop key="splash" /> : null}</AnimatePresence>
         </div>
       </motion.div>
       {/* label status kecil */}
@@ -347,6 +576,20 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
       >
         {botStageStatusText(pose)}
       </div>
+      {/* lencana pintu air (hanya panggung yang punya gateTile) */}
+      {setup.gateTile ? (
+        <div
+          className="absolute bottom-1.5 right-2 z-10 rounded-[3px] px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.14em]"
+          style={{
+            fontFamily: "'Pixelify Sans', sans-serif",
+            backgroundColor: 'rgba(11,14,20,0.82)',
+            color: pose.gateOpen ? '#7cc4de' : '#8d99ab',
+            border: '1.5px solid rgba(216,204,184,0.25)',
+          }}
+        >
+          {pose.gateOpen ? 'Pintu air terbuka' : 'Pintu air tertutup'}
+        </div>
+      ) : null}
       </div>
     </div>
   );

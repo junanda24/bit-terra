@@ -6,6 +6,7 @@ import { setBootError, setBootStage } from './app/bootOverlay';
 import { logError } from './app/errorLog';
 import { eventBus } from './core/bridge/eventBus';
 import { selectPersistedProgress, useGameStore } from './core/bridge/gameStore';
+import { isQuestUnlocked, lockBlockerId } from './core/progression';
 import {
   exportSave,
   importSave,
@@ -126,6 +127,20 @@ function AppShell() {
 
   const handleQuestClick = (quest: QuestDefinition) => {
     const store = useGameStore.getState();
+    // Progresi berurutan (Fase 3): quest terkunci tidak membuka deck dari
+    // jalur mana pun (kartu picker maupun anchor dunia). Piko menyebut
+    // persis quest yang harus diselesaikan lebih dulu.
+    const order = quests.map((q) => q.id);
+    if (!isQuestUnlocked(quest.id, order, store.completedQuests)) {
+      const blockerId = lockBlockerId(quest.id, order, store.completedQuests);
+      const blockerTitle =
+        quests.find((q) => q.id === blockerId)?.title ?? 'misi sebelumnya';
+      store.sayPiko(
+        `Misi "${quest.title}" masih tertutup kabut, Fixer. Selesaikan dulu: ${blockerTitle}.`,
+        'confused',
+      );
+      return;
+    }
     store.setCurrentQuest(quest.id, quest.mode === 'HYBRID' ? store.editorMode : quest.mode);
     // Teks cerita TIDAK lagi disalurkan ke balon Piko (audit layout E:
     // balon 170px + 561 karakter = menara teks). Cerita hidup di dialog
@@ -265,6 +280,13 @@ function AppShell() {
             {quests.map((quest) => {
               const selected = quest.id === currentQuestId;
               const done = completedQuests.includes(quest.id);
+              const order = quests.map((q) => q.id);
+              const locked = !isQuestUnlocked(quest.id, order, completedQuests);
+              const blockerId = locked
+                ? lockBlockerId(quest.id, order, completedQuests)
+                : null;
+              const blockerTitle =
+                quests.find((q) => q.id === blockerId)?.title ?? 'misi sebelumnya';
               return (
                 <button
                   key={quest.id}
@@ -274,8 +296,10 @@ function AppShell() {
                   style={{
                     borderColor: selected ? 'var(--bt-amber)' : 'var(--bt-copper)',
                     background: '#1b2230',
+                    opacity: locked ? 0.72 : 1,
                   }}
                   aria-pressed={selected}
+                  aria-disabled={locked}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span
@@ -286,11 +310,16 @@ function AppShell() {
                     </span>
                     <span className="text-xs" style={{ color: 'var(--bt-sun)' }}>
                       {quest.difficulty}
-                      {done ? ' · Selesai' : ''}
+                      {done ? ' · Selesai' : locked ? ' · Terkunci' : ''}
                     </span>
                   </div>
                   <div className="mt-2 text-lg font-bold">{quest.title}</div>
                   <p className="mt-1 line-clamp-3 text-sm opacity-80">{quest.objectiveText}</p>
+                  {locked && (
+                    <p className="mt-2 text-sm font-semibold" style={{ color: 'var(--bt-sun)' }}>
+                      Terkunci — selesaikan dulu: {blockerTitle}
+                    </p>
+                  )}
                 </button>
               );
             })}

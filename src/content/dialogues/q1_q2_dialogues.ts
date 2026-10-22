@@ -28,7 +28,9 @@ export type DialoguePhase =
   | 'hint2'
   | 'hint3'
   | 'success'
-  | 'funnyFail';
+  | 'funnyFail'
+  /** Transisi antar fase khusus quest HYBRID (Fase 3 Q8). */
+  | 'phase2';
 
 export type QuestDialogueScript = Partial<Record<DialoguePhase, DialogueLine[]>>;
 
@@ -136,6 +138,20 @@ export const Q1_Q2_DIALOGUES: Record<string, QuestDialogueScript> = {
   },
 };
 
+import { Q4_Q6_Q8_DIALOGUES } from './q4_q6_q8_dialogues';
+import { Q3_Q5_Q7_DIALOGUES } from './q3_q5_q7_dialogues';
+
+/**
+ * Registri dialog gabungan semua fase konten. Q1_Q2_DIALOGUES tetap ekspor
+ * aslinya; quest Fase 3 mendaftarkan naskahnya dari berkasnya sendiri dan
+ * digabungkan di sini — satu-satunya pintu lookup modul lain.
+ */
+export const ALL_QUEST_DIALOGUES: Record<string, QuestDialogueScript> = {
+  ...Q1_Q2_DIALOGUES,
+  ...Q4_Q6_Q8_DIALOGUES,
+  ...Q3_Q5_Q7_DIALOGUES,
+};
+
 /**
  * Ambil baris dialog satu quest untuk satu fase (intro / success /
  * funnyFail / hintN). Undefined bila quest atau fase itu belum punya dialog.
@@ -144,12 +160,12 @@ export function getQuestDialogue(
   questId: string,
   phase: DialoguePhase,
 ): DialogueLine[] | undefined {
-  return Q1_Q2_DIALOGUES[questId]?.[phase];
+  return ALL_QUEST_DIALOGUES[questId]?.[phase];
 }
 
 /** Ambil seluruh naskah dialog satu quest (undefined bila belum ada). */
 export function getQuestDialogueScript(
   questId: string,
 ): QuestDialogueScript | undefined {
-  return Q1_Q2_DIALOGUES[questId];
+  return ALL_QUEST_DIALOGUES[questId];
 }

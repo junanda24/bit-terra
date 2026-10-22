@@ -1,4 +1,4 @@
-import type { QuestDefinition } from '../../shared/types';
+import type { BotScenarioExpectation, QuestDefinition } from '../../shared/types';
 
 /**
  * Logika murni panggung bot (tanpa React/DOM) — diekstrak dari BotGridStage
@@ -25,6 +25,7 @@ export type BotActionKind =
   | 'turn-right'
   | 'boot'
   | 'charge'
+  | 'water'
   | 'open'
   | 'close'
   | 'unknown';
@@ -37,6 +38,7 @@ export function normalizeBotAction(action: string): BotActionKind {
   if (base === 'turnright' || base === 'right') return 'turn-right';
   if (base === 'boot' || base === 'wake' || base === 'wakeup' || base === 'on') return 'boot';
   if (base === 'charge' || base === 'charging' || base === 'isi-daya') return 'charge';
+  if (base === 'water' || base === 'siram') return 'water';
   if (base === 'open') return 'open';
   if (base === 'close') return 'close';
   return 'unknown';
@@ -75,11 +77,72 @@ export interface BotStageState {
   /** Ada aksi move/turn/charge yang gagal karena Piko masih tertidur. */
   actedWhileAsleep: boolean;
   onTarget: boolean;
+  // — dunia Fase 3: pintu air, peti dorong, tanaman (sumber kebenaran di
+  // `boxes`/`wateredPlants`; hitungan & bendera di bawah ini TURUNAN yang
+  // dihitung ulang tiap transisi oleh deriveCounts) —
+  /** Pintu air terbuka? (gate.open/close; Q3). */
+  gateOpen: boolean;
+  /** Posisi peti saat ini (Q5). */
+  boxes: [number, number][];
+  /** Kunci petak "x,y" tanaman yang sudah tersiram (Q7). */
+  wateredPlants: string[];
+  /** Berapa kali water() menyiram petak tanpa tanaman (percikan percuma). */
+  waterWasted: number;
+  boxesPlaced: number;
+  boxesTotal: number;
+  /** Ada peti terjepit di tepi grid di luar target — tidak bisa diselamatkan. */
+  boxesStuck: boolean;
+  allBoxesOnTargets: boolean;
+  plantsWatered: number;
+  plantsTotal: number;
+  allPlantsWatered: boolean;
   // — sinyal visual sesaat (dibersihkan aksi 'clear-transients') —
   dizzy: boolean;
   sleepFizzle: boolean;
   dimZap: boolean;
+  /** Tetesan: baru saja menyiram tanaman betulan. */
+  droplet: boolean;
+  /** Percikan: water() di petak tanpa tanaman. */
+  splash: boolean;
   status: BotStageStatus;
+}
+
+const tileKey = (x: number, y: number) => `${x},${y}`;
+
+/** Hitungan turunan dari keadaan mentah dunia (peti & tanaman). */
+function deriveCounts(
+  setup: BotWorldSetup,
+  boxes: [number, number][],
+  wateredPlants: string[],
+): Pick<
+  BotStageState,
+  | 'boxesPlaced'
+  | 'boxesTotal'
+  | 'boxesStuck'
+  | 'allBoxesOnTargets'
+  | 'plantsWatered'
+  | 'plantsTotal'
+  | 'allPlantsWatered'
+> {
+  const [cols, rows] = setup.gridSize;
+  const targetSet = new Set(setup.targets.map(([x, y]) => tileKey(x, y)));
+  const plantSet = new Set((setup.plants ?? []).map(([x, y]) => tileKey(x, y)));
+  const boxesPlaced = boxes.filter(([x, y]) => targetSet.has(tileKey(x, y))).length;
+  const boxesStuck = boxes.some(
+    ([x, y]) =>
+      (x === 0 || y === 0 || x === cols - 1 || y === rows - 1) &&
+      !targetSet.has(tileKey(x, y)),
+  );
+  const plantsWatered = wateredPlants.filter((k) => plantSet.has(k)).length;
+  return {
+    boxesPlaced,
+    boxesTotal: boxes.length,
+    boxesStuck,
+    allBoxesOnTargets: boxes.length > 0 && boxesPlaced === boxes.length,
+    plantsWatered,
+    plantsTotal: plantSet.size,
+    allPlantsWatered: plantSet.size > 0 && plantsWatered === plantSet.size,
+  };
 }
 
 function deriveStatus(s: Omit<BotStageState, 'status'>): BotStageStatus {
@@ -90,8 +153,23 @@ function deriveStatus(s: Omit<BotStageState, 'status'>): BotStageStatus {
   return 'active';
 }
 
-function withStatus(s: Omit<BotStageState, 'status'>): BotStageState {
-  return { ...s, status: deriveStatus(s) };
+function withStatus(
+  s: Omit<BotStageState, 'status'>,
+  setup?: BotWorldSetup,
+): BotStageState {
+  const counts = setup
+    ? deriveCounts(setup, s.boxes, s.wateredPlants)
+    : {
+        boxesPlaced: s.boxesPlaced,
+        boxesTotal: s.boxesTotal,
+        boxesStuck: s.boxesStuck,
+        allBoxesOnTargets: s.allBoxesOnTargets,
+        plantsWatered: s.plantsWatered,
+        plantsTotal: s.plantsTotal,
+        allPlantsWatered: s.allPlantsWatered,
+      };
+  const merged = { ...s, ...counts };
+  return { ...merged, status: deriveStatus(merged) };
 }
 
 export function createBotStageState(
@@ -99,21 +177,37 @@ export function createBotStageState(
   startPos: [number, number] = [0, 0],
 ): BotStageState {
   const [sx, sy] = startPos;
-  return withStatus({
-    x: sx,
-    y: sy,
-    facing: 0,
-    awake: false,
-    charged: false,
-    chargedDark: false,
-    crashed: false,
-    crashKind: null,
-    actedWhileAsleep: false,
-    onTarget: setup.targets.some(([tx, ty]) => tx === sx && ty === sy),
-    dizzy: false,
-    sleepFizzle: false,
-    dimZap: false,
-  });
+  return withStatus(
+    {
+      x: sx,
+      y: sy,
+      facing: setup.startFacing ?? 0,
+      awake: false,
+      charged: false,
+      chargedDark: false,
+      crashed: false,
+      crashKind: null,
+      actedWhileAsleep: false,
+      onTarget: setup.targets.some(([tx, ty]) => tx === sx && ty === sy),
+      gateOpen: false,
+      boxes: (setup.boxes ?? []).map(([x, y]): [number, number] => [x, y]),
+      wateredPlants: [],
+      waterWasted: 0,
+      boxesPlaced: 0,
+      boxesTotal: 0,
+      boxesStuck: false,
+      allBoxesOnTargets: false,
+      plantsWatered: 0,
+      plantsTotal: 0,
+      allPlantsWatered: false,
+      dizzy: false,
+      sleepFizzle: false,
+      dimZap: false,
+      droplet: false,
+      splash: false,
+    },
+    setup,
+  );
 }
 
 export type BotStageAction =
@@ -134,6 +228,7 @@ export function createBotStageReducer(setup: BotWorldSetup) {
   const [cols, rows] = setup.gridSize;
   const obstacleSet = new Set(setup.obstacles.map(([x, y]) => `${x},${y}`));
   const targetSet = new Set(setup.targets.map(([x, y]) => `${x},${y}`));
+  const plantSet = new Set((setup.plants ?? []).map(([x, y]) => `${x},${y}`));
   const onTarget = (x: number, y: number) => targetSet.has(`${x},${y}`);
 
   return function botStageReducer(
@@ -145,8 +240,17 @@ export function createBotStageReducer(setup: BotWorldSetup) {
         return createBotStageState(setup, action.startPos ?? [0, 0]);
 
       case 'clear-transients':
-        if (!state.dizzy && !state.sleepFizzle && !state.dimZap) return state;
-        return withStatus({ ...state, dizzy: false, sleepFizzle: false, dimZap: false });
+        if (!state.dizzy && !state.sleepFizzle && !state.dimZap && !state.droplet && !state.splash) {
+          return state;
+        }
+        return withStatus({
+          ...state,
+          dizzy: false,
+          sleepFizzle: false,
+          dimZap: false,
+          droplet: false,
+          splash: false,
+        });
 
       case 'funny-fail': {
         // Sinyal visual mengikuti JENIS kegagalannya (F-02): bintang pusing
@@ -161,6 +265,9 @@ export function createBotStageReducer(setup: BotWorldSetup) {
         if (action.reactionKey === 'wrong_order') {
           return withStatus({ ...state, sleepFizzle: true });
         }
+        if (action.reactionKey === 'plants_dry' || action.reactionKey === 'watered_empty') {
+          return withStatus({ ...state, splash: true });
+        }
         return state;
       }
 
@@ -171,29 +278,34 @@ export function createBotStageReducer(setup: BotWorldSetup) {
           dizzy: false,
           sleepFizzle: false,
           dimZap: false,
+          droplet: false,
+          splash: false,
         };
+        // F-01 berlaku untuk SEMUA aksi tubuh/dunia: robot tertidur tidak
+        // bergerak, tidak menyiram, dan tidak menggerakkan pintu air.
+        const asleepFizzle = (): BotStageState =>
+          withStatus({ ...base, sleepFizzle: true, actedWhileAsleep: true }, setup);
         switch (action.kind) {
           case 'boot':
-            return withStatus({ ...base, awake: true });
+            return withStatus({ ...base, awake: true }, setup);
 
           case 'turn-left':
           case 'turn-right': {
-            if (!base.awake) {
-              return withStatus({ ...base, sleepFizzle: true, actedWhileAsleep: true });
-            }
+            if (!base.awake) return asleepFizzle();
             const delta = action.kind === 'turn-left' ? 3 : 1;
-            return withStatus({ ...base, facing: ((base.facing + delta) % 4) as Facing });
+            return withStatus(
+              { ...base, facing: ((base.facing + delta) % 4) as Facing },
+              setup,
+            );
           }
 
           case 'move': {
-            if (!base.awake) {
-              // F-01: robot tertidur tidak berjalan — perintahnya menguap.
-              return withStatus({ ...base, sleepFizzle: true, actedWhileAsleep: true });
-            }
+            if (!base.awake) return asleepFizzle();
             const steps = normalizeMoveSteps(action.stepsArg);
             const [dx, dy] = DELTAS[base.facing];
             let nx = base.x;
             let ny = base.y;
+            let boxes = base.boxes;
             let crashKind: BotCrashKind | null = null;
             for (let i = 0; i < steps; i++) {
               const tx = nx + dx;
@@ -206,36 +318,94 @@ export function createBotStageReducer(setup: BotWorldSetup) {
                 crashKind = 'obstacle';
                 break;
               }
+              // Peti di petak tujuan = DORONG (Q5): peti bergeser satu petak
+              // searah hadap bila petak sesudahnya bebas (bukan dinding/batas/
+              // peti lain/tanaman). Gagal mendorong = tabrakan biasa: robot
+              // berhenti di tempat, peti tidak bergerak.
+              const bi = boxes.findIndex(([bx, by]) => bx === tx && by === ty);
+              if (bi >= 0) {
+                const px = tx + dx;
+                const py = ty + dy;
+                if (px < 0 || py < 0 || px >= cols || py >= rows) {
+                  crashKind = 'bounds';
+                  break;
+                }
+                if (
+                  obstacleSet.has(`${px},${py}`) ||
+                  plantSet.has(`${px},${py}`) ||
+                  boxes.some(([bx, by]) => bx === px && by === py)
+                ) {
+                  crashKind = 'obstacle';
+                  break;
+                }
+                boxes = boxes.map((b, j): [number, number] =>
+                  j === bi ? [px, py] : b,
+                );
+              }
               nx = tx;
               ny = ty;
             }
-            return withStatus({
-              ...base,
-              x: nx,
-              y: ny,
-              onTarget: onTarget(nx, ny),
-              crashed: base.crashed || crashKind !== null,
-              crashKind: base.crashKind ?? crashKind,
-              dizzy: crashKind !== null ? true : base.dizzy,
-            });
+            return withStatus(
+              {
+                ...base,
+                x: nx,
+                y: ny,
+                boxes,
+                onTarget: onTarget(nx, ny),
+                crashed: base.crashed || crashKind !== null,
+                crashKind: base.crashKind ?? crashKind,
+                dizzy: crashKind !== null ? true : base.dizzy,
+              },
+              setup,
+            );
           }
 
           case 'charge': {
-            if (!base.awake) {
-              // F-01: robot tertidur tidak mengisi daya.
-              return withStatus({ ...base, sleepFizzle: true, actedWhileAsleep: true });
-            }
+            if (!base.awake) return asleepFizzle();
             if (onTarget(base.x, base.y)) {
-              return withStatus({ ...base, charged: true });
+              return withStatus({ ...base, charged: true }, setup);
             }
             // F-02: charge di tempat gelap = sinyalnya sendiri, BUKAN tabrakan.
-            return withStatus({ ...base, chargedDark: true, dimZap: true });
+            return withStatus({ ...base, chargedDark: true, dimZap: true }, setup);
+          }
+
+          case 'water': {
+            if (!base.awake) return asleepFizzle();
+            // Semantik siram (Q7): tanaman di PETAK ROBOT BERDIRI yang
+            // disiram — bukan petak di depannya — supaya pemain cukup
+            // melangkah ke petak tanaman lalu menyiram, tanpa menebak
+            // arah hadap untuk aksi ini (arah hadap urusan gerak & putar).
+            const key = `${base.x},${base.y}`;
+            if (plantSet.has(key) && !base.wateredPlants.includes(key)) {
+              return withStatus(
+                {
+                  ...base,
+                  wateredPlants: [...base.wateredPlants, key],
+                  droplet: true,
+                },
+                setup,
+              );
+            }
+            // Menyiram petak kosong / tanaman yang sudah basah: percikan
+            // percuma — tercatat, tidak menghukum selain waktu animasi.
+            return withStatus(
+              { ...base, waterWasted: base.waterWasted + 1, splash: true },
+              setup,
+            );
+          }
+
+          case 'open':
+          case 'close': {
+            if (!base.awake) return asleepFizzle();
+            return withStatus(
+              { ...base, gateOpen: action.kind === 'open' },
+              setup,
+            );
           }
 
           default:
-            // 'open' / 'close' (pintu air) & aksi asing: bukan urusan tubuh
-            // Piko di panggung ini — tidak mengubah pose.
-            return withStatus(base);
+            // Aksi asing: bukan urusan tubuh Piko di panggung ini.
+            return withStatus(base, setup);
         }
       }
     }
@@ -250,6 +420,14 @@ export function botStageStatusText(state: BotStageState): string {
   if (!state.awake) return 'Piko tertidur';
   if (state.charged) return 'Daya terisi penuh';
   if (state.status === 'charged-dark') return 'Tidak ada cahaya di sini';
+  if (state.allPlantsWatered) return 'Semua tanaman tersiram';
+  if (state.plantsTotal > 0) {
+    return `Tanaman tersiram: ${state.plantsWatered}/${state.plantsTotal}`;
+  }
+  if (state.allBoxesOnTargets) return 'Semua peti di tempatnya';
+  if (state.boxesTotal > 0) {
+    return `Peti di tempatnya: ${state.boxesPlaced}/${state.boxesTotal}`;
+  }
   return 'Piko aktif';
 }
 
@@ -271,6 +449,52 @@ export function botQuestVerdict(
   const pick = (...keys: string[]): string =>
     keys.find((k) => k in reactions) ?? keys[0] ?? 'wrong_result';
 
+  // — Quest bertanaman (Q7): sukses = semua tanaman tersiram. Tabrakan di
+  // tengah jalan TIDAK menelan hasil siraman (dicek sesudah sukses), sama
+  // seperti semangat F-02 — yang dinilai pertama adalah tujuan quest-nya.
+  if (state.plantsTotal > 0) {
+    if (state.awake && state.allPlantsWatered) return { kind: 'success' };
+    if (!state.awake || state.actedWhileAsleep) {
+      return { kind: 'fail', reactionKey: pick('wrong_order') };
+    }
+    if (state.crashed) {
+      return {
+        kind: 'fail',
+        reactionKey:
+          state.crashKind === 'bounds'
+            ? pick('out_of_bounds', 'hit_obstacle')
+            : pick('hit_obstacle', 'out_of_bounds'),
+      };
+    }
+    if (state.waterWasted > 0 && state.plantsWatered === 0) {
+      return { kind: 'fail', reactionKey: pick('watered_empty', 'plants_dry') };
+    }
+    return { kind: 'fail', reactionKey: pick('plants_dry', 'wrong_result') };
+  }
+
+  // — Quest berpeti (Q5): sukses = semua peti di petak target. Peti yang
+  // terjepit di tepi grid punya leluconnya sendiri (box_stuck).
+  if (state.boxesTotal > 0) {
+    if (state.awake && state.allBoxesOnTargets) return { kind: 'success' };
+    if (!state.awake || state.actedWhileAsleep) {
+      return { kind: 'fail', reactionKey: pick('wrong_order') };
+    }
+    if (state.boxesStuck) {
+      return { kind: 'fail', reactionKey: pick('box_stuck', 'boxes_incomplete') };
+    }
+    if (state.crashed) {
+      return {
+        kind: 'fail',
+        reactionKey:
+          state.crashKind === 'bounds'
+            ? pick('out_of_bounds', 'hit_obstacle')
+            : pick('hit_obstacle', 'out_of_bounds'),
+      };
+    }
+    return { kind: 'fail', reactionKey: pick('boxes_incomplete', 'wrong_result') };
+  }
+
+  // — Quest klasik petak cahaya + charge (Q1).
   if (state.awake && state.onTarget && state.charged) return { kind: 'success' };
 
   if (!state.awake || state.actedWhileAsleep) {
@@ -295,6 +519,71 @@ export function botQuestVerdict(
     return { kind: 'fail', reactionKey: pick('not_on_target', 'no_charge') };
   }
   return { kind: 'fail', reactionKey: pick('wrong_result') };
+}
+
+/**
+ * Periksa keadaan akhir satu skenario terhadap harapannya (Fase 3 Q3).
+ * Hanya field yang disebut di `expected` yang dinilai — keadaan parsial.
+ */
+export function evaluateBotExpectation(
+  state: BotStageState,
+  expected: BotScenarioExpectation,
+): { pass: boolean; mismatches: string[] } {
+  const mismatches: string[] = [];
+  if (expected.gateOpen !== undefined && state.gateOpen !== expected.gateOpen) {
+    mismatches.push('gateOpen');
+  }
+  if (expected.onTarget !== undefined && state.onTarget !== expected.onTarget) {
+    mismatches.push('onTarget');
+  }
+  if (expected.charged !== undefined && state.charged !== expected.charged) {
+    mismatches.push('charged');
+  }
+  if (
+    expected.boxesOnTargets !== undefined &&
+    state.allBoxesOnTargets !== expected.boxesOnTargets
+  ) {
+    mismatches.push('boxesOnTargets');
+  }
+  if (
+    expected.allPlantsWatered !== undefined &&
+    state.allPlantsWatered !== expected.allPlantsWatered
+  ) {
+    mismatches.push('allPlantsWatered');
+  }
+  if (
+    expected.position !== undefined &&
+    (state.x !== expected.position[0] || state.y !== expected.position[1])
+  ) {
+    mismatches.push('position');
+  }
+  return { pass: mismatches.length === 0, mismatches };
+}
+
+/**
+ * Turunkan kunci reaksi lucu dari selisih harapan skenario vs keadaan
+ * akhir. Urutan: keluarga tertidur → pintu air (dua arah, leluconnya beda:
+ * tetap tertutup saat kering vs dibuka saat basah) → peti → tanaman → umum.
+ * Konten quest boleh menimpa lewat BotScenario.failReactionKey.
+ */
+export function botScenarioFailKey(
+  state: BotStageState,
+  expected: BotScenarioExpectation,
+): string {
+  if (!state.awake || state.actedWhileAsleep) return 'wrong_order';
+  if (expected.gateOpen === true && !state.gateOpen) return 'gate_still_closed';
+  if (expected.gateOpen === false && state.gateOpen) return 'opened_when_wet';
+  if (expected.boxesOnTargets === true && !state.allBoxesOnTargets) {
+    return state.boxesStuck ? 'box_stuck' : 'boxes_incomplete';
+  }
+  if (expected.allPlantsWatered === true && !state.allPlantsWatered) {
+    return state.waterWasted > 0 && state.plantsWatered === 0
+      ? 'watered_empty'
+      : 'plants_dry';
+  }
+  if (expected.charged === true && !state.charged) return 'no_charge';
+  if (expected.onTarget === true && !state.onTarget) return 'not_on_target';
+  return 'wrong_result';
 }
 
 /**

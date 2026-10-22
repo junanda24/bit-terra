@@ -326,6 +326,15 @@ class LintAnalyzer {
   /** Periksa bacaan satu identifier: hanya TDZ yang ditandai (lihat header). */
   private checkRead(node: AstNode, scope: LintScope): void {
     const name = node.name as string;
+    // Blanko template (___) di posisi BACA mana pun — kondisi if, batas
+    // loop for, operan hitung — adalah blanko yang sama dengan blanko
+    // posisi callee (Fase 3 Q5/Q7 memakainya untuk batas loop). Tanpa ini,
+    // blanko lolos linter dan baru meledak sebagai "variabel tidak
+    // ditemukan" di interpreter, dengan saran yang menyesatkan.
+    if (/^_+$/.test(name)) {
+      this.push(blankPlaceholderError(lineOf(node)));
+      return;
+    }
     const decl = resolveDecl(scope, name);
     if (!decl) return; // tak terdeklarasi: domain interpreter (akar registry tak dikenal linter)
     if (decl.kind === 'function') return; // deklarasi fungsi ter-hoist: selalu aman

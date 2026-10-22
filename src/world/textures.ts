@@ -210,7 +210,7 @@ function paintLamp(ctx: Ctx, on: boolean): void {
   r(ctx, 9, 0, 14, 3, P.copper);
 }
 
-const OBJECT_PAINTERS: Record<string, (ctx: Ctx, w: number, h: number) => void> = {
+export const OBJECT_PAINTERS: Record<string, (ctx: Ctx, w: number, h: number) => void> = {
   obj_tree: (ctx) => paintTree(ctx),
   obj_bush(ctx) {
     circle(ctx, 12, 20, 10, P.mossDark);
@@ -324,6 +324,59 @@ const OBJECT_PAINTERS: Record<string, (ctx: Ctx, w: number, h: number) => void> 
     circle(ctx, 32, 8, 3, P.woodDark);
     r(ctx, 31, 0, 2, 16, P.copper);
     r(ctx, 24, 7, 16, 2, P.copper);
+  },
+  // Pintu air mengalir (Q3 selesai): bilah terangkat, air deras berbusa.
+  obj_sluice_flow(ctx, w) {
+    r(ctx, 0, 30, w, 34, P.river);
+    r(ctx, 0, 36, w, 5, P.riverLight);
+    r(ctx, 0, 48, w, 4, P.riverLight);
+    r(ctx, 6, 56, 14, 3, '#dff4ff');
+    r(ctx, 30, 58, 18, 3, '#dff4ff');
+    r(ctx, 44, 52, 12, 3, '#dff4ff');
+    r(ctx, 2, 8, 12, 56, P.stone);
+    r(ctx, 50, 8, 12, 56, P.stone);
+    r(ctx, 2, 8, 12, 6, P.stoneDark);
+    r(ctx, 50, 8, 12, 6, P.stoneDark);
+    // Bilah pintu terangkat ke atas (celah air terbuka di bawahnya).
+    for (let i = 0; i < 4; i++) r(ctx, 17 + i * 8, 2, 6, 16, i % 2 ? P.wood : P.woodLight);
+    r(ctx, 14, 18, 36, 5, P.woodDark);
+    circle(ctx, 32, 8, 8, P.copper);
+    circle(ctx, 32, 8, 3, P.woodDark);
+    r(ctx, 31, 0, 2, 16, P.copper);
+    r(ctx, 24, 7, 16, 2, P.copper);
+  },
+  // Gudang konveyor menyala (Q5 selesai): jendela & pintu bercahaya hangat.
+  obj_shed_lit(ctx, w, h) {
+    OBJECT_PAINTERS.obj_shed(ctx, w, h);
+    r(ctx, 13, 33, 10, 12, '#ffca6a');
+    r(ctx, 42, 28, 12, 12, '#3d2c14');
+    r(ctx, 44, 30, 8, 8, '#ffca6a');
+    // Lampu gantung di atas pintu + cahayanya.
+    circle(ctx, 18, 26, 4, '#ffe9a8');
+    r(ctx, 8, 44, 20, 3, '#ffca6a');
+  },
+  // Gerbang akar terbuka (Q7 selesai): akar minggir, tunas kristal segar.
+  obj_root_arch_open(ctx) {
+    r(ctx, 0, 34, 8, 30, '#6b4630');
+    r(ctx, 56, 34, 8, 30, '#6b4630');
+    ctx.strokeStyle = '#6b4630';
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.moveTo(4, 38);
+    ctx.quadraticCurveTo(2, 4, 22, 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(60, 38);
+    ctx.quadraticCurveTo(62, 4, 42, 2);
+    ctx.stroke();
+    circle(ctx, 6, 6, 7, P.mossDark);
+    circle(ctx, 58, 6, 7, P.mossDark);
+    // Tunas kristal segar di kaki gerbang + jalan tengah yang bersih.
+    r(ctx, 12, 52, 3, 8, P.moss);
+    r(ctx, 20, 56, 3, 6, '#7dffcb');
+    r(ctx, 42, 56, 3, 6, '#7dffcb');
+    r(ctx, 49, 52, 3, 8, P.moss);
+    r(ctx, 26, 60, 12, 3, '#8a6a48');
   },
   obj_root_arch(ctx) {
     r(ctx, 2, 26, 14, 38, '#6b4630');

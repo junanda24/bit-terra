@@ -71,6 +71,13 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
   private lampImage: Phaser.GameObjects.Image | null = null;
   private lampGlow: Phaser.GameObjects.Arc | null = null;
   private gateImage: Phaser.GameObjects.Image | null = null;
+  private canopyImage: Phaser.GameObjects.Image | null = null;
+  private canopyGlow: Phaser.GameObjects.Arc | null = null;
+  private sluiceImage: Phaser.GameObjects.Image | null = null;
+  private shedImage: Phaser.GameObjects.Image | null = null;
+  private archImage: Phaser.GameObjects.Image | null = null;
+  private sluiceFlowStrip: Phaser.GameObjects.Rectangle | null = null;
+  private farmGlow: Phaser.GameObjects.Rectangle | null = null;
 
   private npcs: NpcActor[] = [];
   private sheepSprites = new Map<string, Phaser.GameObjects.Sprite>();
@@ -231,7 +238,20 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
         this.gateImage = img;
         img.setTexture(this.state.penGateClosed ? 'obj_gate_closed' : 'obj_gate_open');
       }
+      if (o.id === 'sluice') {
+        this.sluiceImage = img;
+        img.setTexture(this.state.sluiceFlowing ? 'obj_sluice_flow' : 'obj_sluice');
+      }
+      if (o.id === 'conveyor_shed') {
+        this.shedImage = img;
+        img.setTexture(this.state.conveyorRunning ? 'obj_shed_lit' : 'obj_shed');
+      }
+      if (o.id === 'root_arch') {
+        this.archImage = img;
+        img.setTexture(this.state.mazeRootsReceded ? 'obj_root_arch_open' : 'obj_root_arch');
+      }
       if (o.id === 'mother_canopy') {
+        this.canopyImage = img;
         this.tweens.add({
           targets: img,
           x: '+=4',
@@ -240,8 +260,30 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
           repeat: -1,
           ease: 'Sine.easeInOut',
         });
+        // Mekar Pohon Induk (Q8): cahaya hangat di plaza + rona keemasan di
+        // kanopi — pola yang sama dengan lampu bengkel (Q1), digerakkan
+        // murni oleh deriveWorldState.motherTreeBlooming.
+        this.canopyGlow = this.add
+          .circle(19.5 * TILE_SIZE, 4 * TILE_SIZE, 120, 0xf4b41b, 0.1)
+          .setDepth(4400)
+          .setVisible(this.state.motherTreeBlooming);
+        if (this.state.motherTreeBlooming) img.setTint(0xffe2a0);
       }
     }
+    // Lapisan keadaan Fase 3 (digambar sekali, visibilitasnya digerakkan
+    // deriveWorldState lewat applyCompletedQuests):
+    // - aliran air di bawah pintu air saat sluiceFlowing (Q3);
+    // - rona hijau di atas ladang tenggara saat fieldGreen (Q3).
+    this.sluiceFlowStrip = this.add
+      .rectangle(12 * TILE_SIZE, 24 * TILE_SIZE, 2 * TILE_SIZE, 2 * TILE_SIZE, 0x9fd8ee, 0.35)
+      .setOrigin(0, 0)
+      .setDepth(2)
+      .setVisible(this.state.sluiceFlowing);
+    this.farmGlow = this.add
+      .rectangle(27 * TILE_SIZE, 13 * TILE_SIZE, 11 * TILE_SIZE, 6 * TILE_SIZE, 0x6fae5f, 0.16)
+      .setOrigin(0, 0)
+      .setDepth(2)
+      .setVisible(this.state.fieldGreen);
   }
 
   private createAnimations(): void {
@@ -462,6 +504,30 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
       this.lampImage.setTexture(next.workshopLampOn ? 'obj_lamp_on' : 'obj_lamp_off');
     }
     if (this.lampGlow) this.lampGlow.setVisible(next.workshopLampOn);
+
+    if (prev.motherTreeBlooming !== next.motherTreeBlooming) {
+      if (this.canopyGlow) this.canopyGlow.setVisible(next.motherTreeBlooming);
+      if (this.canopyImage) {
+        if (next.motherTreeBlooming) this.canopyImage.setTint(0xffe2a0);
+        else this.canopyImage.clearTint();
+      }
+    }
+
+    if (prev.sluiceFlowing !== next.sluiceFlowing) {
+      if (this.sluiceImage) {
+        this.sluiceImage.setTexture(next.sluiceFlowing ? 'obj_sluice_flow' : 'obj_sluice');
+      }
+      if (this.sluiceFlowStrip) this.sluiceFlowStrip.setVisible(next.sluiceFlowing);
+    }
+    if (prev.fieldGreen !== next.fieldGreen && this.farmGlow) {
+      this.farmGlow.setVisible(next.fieldGreen);
+    }
+    if (prev.conveyorRunning !== next.conveyorRunning && this.shedImage) {
+      this.shedImage.setTexture(next.conveyorRunning ? 'obj_shed_lit' : 'obj_shed');
+    }
+    if (prev.mazeRootsReceded !== next.mazeRootsReceded && this.archImage) {
+      this.archImage.setTexture(next.mazeRootsReceded ? 'obj_root_arch_open' : 'obj_root_arch');
+    }
 
     if (prev.penGateClosed !== next.penGateClosed) {
       if (this.gateImage) {

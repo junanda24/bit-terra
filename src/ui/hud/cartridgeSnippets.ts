@@ -41,6 +41,15 @@ export const CARTRIDGE_SNIPPETS: Record<string, string> = {
   'gate.open': 'gate.open();',
   'close()': 'gate.close();',
   'gate.close': 'gate.close();',
+  'water()': 'piko.water();',
+  water: 'piko.water();',
+  'piko.water': 'piko.water();',
+  // Cartridge bernama (Fase 3): modul cerita yang membungkus fungsi bot.
+  // 'Sensor Tanah' menyisipkan bacaan sensornya; 'Kompas Akar' menyisipkan
+  // belokan yang dipakai solusi rujukan Q7 (turnLeft tetap tersedia —
+  // ia bagian fungsi dasar deck dan bisa diketik langsung).
+  'Sensor Tanah': 'sensor.soilMoisture',
+  'Kompas Akar': 'piko.turnRight();',
   if: 'if ( ) {\n  \n}',
   else: 'else {\n  \n}',
   for: 'for (let i = 0; i < 3; i++) {\n  \n}',

@@ -44,7 +44,7 @@ import {
   newlyRepairedAreas,
   sheepTile,
 } from './worldState';
-import { getWorldDialogue } from './npcDialogues';
+import { getBrainFogDialogue, getWorldDialogue } from './npcDialogues';
 import { ALL_QUESTS } from '../content/quests/index';
 import { quest02DombaTersesat } from '../content/quests/quest_02_domba_tersesat';
 
@@ -126,6 +126,11 @@ describe('deriveWorldState', () => {
       pikoAwake: false,
       penGateClosed: false,
       sheepHome: false,
+      sluiceFlowing: false,
+      fieldGreen: false,
+      conveyorRunning: false,
+      mazeRootsReceded: false,
+      motherTreeBlooming: false,
       repairedAreas: [],
     });
   });
@@ -146,8 +151,21 @@ describe('deriveWorldState', () => {
       pikoAwake: true,
       penGateClosed: true,
       sheepHome: true,
+      sluiceFlowing: false,
+      fieldGreen: false,
+      conveyorRunning: false,
+      mazeRootsReceded: false,
+      motherTreeBlooming: false,
       repairedAreas: ['workshop', 'sheep_pen'],
     });
+  });
+
+  it('Q8 selesai: Pohon Induk berbunga dan areanya tercatat pulih', () => {
+    const s = deriveWorldState([Q1, Q2, 'quest_08_great_commit']);
+    expect(s.motherTreeBlooming).toBe(true);
+    expect(s.repairedAreas).toEqual(['workshop', 'sheep_pen', 'mother_tree']);
+    const before = deriveWorldState([Q1, Q2]);
+    expect(newlyRepairedAreas(before, s)).toEqual(['mother_tree']);
   });
 
   it('Q2 saja (urutan bebas): kandang pulih, Piko tetap tidur', () => {
@@ -243,6 +261,23 @@ describe('registri interaksi vs indeks konten', () => {
   });
 });
 
+describe('dialog kabut otak (jangkar terkunci)', () => {
+  it('menyebut judul quest penghalang dan bebas emoji', () => {
+    const dlg = getBrainFogDialogue('Pintu Air Kemarau');
+    expect(dlg.name).toBe('Kabut Otak');
+    expect(dlg.lines.join(' ')).toContain('Pintu Air Kemarau');
+    for (const line of dlg.lines) expect(line).not.toMatch(EMOJI_RE);
+  });
+
+  it('dialog selesai untuk jangkar quest Fase 3 (C1) semuanya ada', () => {
+    for (const id of ['flora_fields_done', 'festival_done', 'great_commit_done']) {
+      const dlg = getWorldDialogue(id, []);
+      expect(dlg, id).not.toBeNull();
+      expect(dlg!.lines.length).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('spesifikasi tekstur karakter', () => {
   it('setiap karakter: 3 tampak x 16 baris x 16 kolom, kaki 3 varian x 4 baris', () => {
     for (const spec of Object.values(CHARACTER_SPECS)) {
@@ -291,5 +326,22 @@ describe('petunjuk tujuan HUD', () => {
     expect(tengah).toContain('Pak Rani');
     expect(akhir).toContain('pulih');
     for (const hint of [awal, tengah, akhir]) expect(hint).not.toMatch(EMOJI_RE);
+  });
+
+  it('rantai Fase 3: menunjuk quest berikutnya yang benar, tamat di Pohon Induk', () => {
+    const done = [Q1, Q2, 'quest_03_pintu_air'];
+    expect(getObjectiveHint(done)).toContain('Bibi Flora');
+    done.push('quest_04_urutan_panen');
+    expect(getObjectiveHint(done)).toContain('konveyor');
+    done.push('quest_05_konveyor_roti');
+    expect(getObjectiveHint(done)).toContain('Festival');
+    done.push('quest_06_kas_festival');
+    expect(getObjectiveHint(done)).toContain('Gerbang Akar');
+    done.push('quest_07_jembatan_kristal');
+    expect(getObjectiveHint(done)).toContain('Pohon Induk');
+    done.push('quest_08_great_commit');
+    const tamat = getObjectiveHint(done);
+    expect(tamat).toContain('pulih sepenuhnya');
+    expect(tamat).not.toMatch(EMOJI_RE);
   });
 });
