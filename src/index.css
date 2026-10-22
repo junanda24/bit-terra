@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+:root {
+  --bt-moss: #4b724f; --bt-sun: #f4b41b; --bt-wood: #a85432; --bt-river: #3b82a6; --bt-copper: #c87d55;
+  --bt-slate: #141820; --bt-bezel: #d8ccb8; --bt-amber: #ffb000; --bt-mint: #00f5d4; --bt-coral: #ff4d6d;
+}
+html, body { background: var(--bt-slate); }
+.pixelated { image-rendering: pixelated; }
