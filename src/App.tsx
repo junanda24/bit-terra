@@ -5,6 +5,7 @@ import { RecoveryBoundary } from './app/RecoveryBoundary';
 import { setBootError, setBootStage } from './app/bootOverlay';
 import { logError } from './app/errorLog';
 import { eventBus } from './core/bridge/eventBus';
+import { FOCUS_REST_TICK_MS, tickFocusRest } from './core/bridge/focusRest';
 import { selectPersistedProgress, useGameStore } from './core/bridge/gameStore';
 import { isQuestUnlocked, lockBlockerId } from './core/progression';
 import {
@@ -105,6 +106,16 @@ function AppShell() {
   // Flush the pending autosave when the page is hidden or closed, so the
   // debounce window cannot eat the last seconds of progress (CORE-M2).
   useEffect(() => installFlushOnHide(), []);
+
+  // Istirahat Fokus di desa (balance pass Fase 4): selama deck tertutup,
+  // fokus pulih pelan-pelan sampai batas istirahat — jalan pulang dari
+  // fokus 0 yang tidak mensyaratkan sukses (logika: core/bridge/focusRest).
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      tickFocusRest();
+    }, FOCUS_REST_TICK_MS);
+    return () => window.clearInterval(id);
+  }, []);
 
   // Autosave (debounced) whenever persisted progress changes; the adaptive
   // music mix follows coding mode.
@@ -461,6 +472,7 @@ function AppShell() {
             musicOn={musicOn}
             onToggleMusic={() => void handleMusicToggle()}
             onOpenMissions={() => setPickerOpen(true)}
+            active={!deckOpen}
           />
         </Suspense>
       </div>

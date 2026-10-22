@@ -1,4 +1,8 @@
-import type { BotScenarioExpectation, QuestDefinition } from '../../shared/types';
+import type {
+  BotScenario,
+  BotScenarioExpectation,
+  QuestDefinition,
+} from '../../shared/types';
 
 /**
  * Logika murni panggung bot (tanpa React/DOM) — diekstrak dari BotGridStage
@@ -584,6 +588,33 @@ export function botScenarioFailKey(
   if (expected.charged === true && !state.charged) return 'no_charge';
   if (expected.onTarget === true && !state.onTarget) return 'not_on_target';
   return 'wrong_result';
+}
+
+/**
+ * Kunci reaksi untuk satu babak skenario yang GAGAL harapannya — urutan
+ * dahulukan per temuan playtest PT2-F3:
+ *
+ * 1. Disiplin boot: Piko tidak pernah dinyalakan, atau beraksi selagi
+ *    tertidur (`wrong_order`). Penyebab ini yang paling presisi — skrip
+ *    tanpa boot() tidak boleh dinarasikan sebagai soal pintu air hanya
+ *    karena pintu kebetulan belum bergerak.
+ * 2. Tabrakan sungguhan (latch `crashed`): batas grid → `out_of_bounds`,
+ *    rintangan → `hit_obstacle`. Pose menceritakan apa yang benar-benar
+ *    menghentikan Piko; kunci harapan skenario tetap menelan penyebab
+ *    ini bila didahulukan.
+ * 3. Kunci tertulis skenario (`failReactionKey`), lalu kunci turunan
+ *    dari selisih harapan (`botScenarioFailKey`) — perilaku lama untuk
+ *    kegagalan murni soal harapan (pintu salah posisi, peti kurang, dst).
+ */
+export function resolveScenarioFailKey(
+  state: BotStageState,
+  scenario: BotScenario,
+): string {
+  if (!state.awake || state.actedWhileAsleep) return 'wrong_order';
+  if (state.crashed) {
+    return state.crashKind === 'bounds' ? 'out_of_bounds' : 'hit_obstacle';
+  }
+  return scenario.failReactionKey ?? botScenarioFailKey(state, scenario.expected);
 }
 
 /**

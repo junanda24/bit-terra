@@ -87,8 +87,9 @@ export function FocusBar({ focus: focusProp }: FocusBarProps) {
           className="mt-2 text-[13px] leading-snug"
           style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#ffb3a7' }}
         >
-          Kabut otak mulai menebal. Fokus pulih +20 setiap kamu menuntaskan misi — dan
-          tombol Minta Petunjuk selalu gratis, tidak memotong fokus sama sekali.
+          Kabut otak mulai menebal. Tutup dulu deck-nya dan jalan-jalan sebentar di
+          desa — fokus pulih pelan-pelan sampai separuh selama kamu beristirahat.
+          Menuntaskan misi memulihkan +20, dan tombol Minta Petunjuk selalu gratis.
         </p>
       ) : null}
     </div>

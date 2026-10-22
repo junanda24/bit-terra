@@ -23,9 +23,17 @@ export interface PersistedProgress {
   completedQuests: string[];
   codeByQuest: Record<string, string>;
   focus: number;
+  /**
+   * Fase HYBRID yang sudah dicapai per quest (PT2-F6): hanya fase 2 yang
+   * dicatat — absennya entri berarti quest masih di fase 1. Opsional di
+   * payload supaya save lama (tanpa field ini) tetap sah.
+   */
+  hybridPhaseByQuest?: Record<string, 2>;
 }
 
 interface GameStore extends PersistedProgress {
+  /** Keadaan hidup peta fase HYBRID — di store selalu ada (mungkin kosong). */
+  hybridPhaseByQuest: Record<string, 2>;
   currentQuestId: string | null;
   editorMode: EditorMode;
   /** True while the Cyber-Deck is open; the world is paused meanwhile. */
@@ -35,6 +43,8 @@ interface GameStore extends PersistedProgress {
   setCurrentQuest: (questId: string | null, mode?: EditorMode) => void;
   setEditorMode: (mode: EditorMode) => void;
   setCode: (questId: string, code: string) => void;
+  /** Catat fase HYBRID sebuah quest: fase 2 disimpan, fase 1 menghapus catatan. */
+  setHybridPhase: (questId: string, phase: 1 | 2) => void;
   setFocus: (focus: number) => void;
   adjustFocus: (delta: number) => void;
   setCodingMode: (on: boolean) => void;
@@ -56,6 +66,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   focus: FOCUS_MAX,
   codingMode: false,
   completedQuests: [],
+  hybridPhaseByQuest: {},
   pikoLine: null,
 
   setCurrentQuest: (questId, mode) =>
@@ -68,6 +79,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   setCode: (questId, code) =>
     set((s) => ({ codeByQuest: { ...s.codeByQuest, [questId]: code } })),
+
+  setHybridPhase: (questId, phase) =>
+    set((s) => {
+      if (phase === 2) {
+        if (s.hybridPhaseByQuest[questId] === 2) return s;
+        return { hybridPhaseByQuest: { ...s.hybridPhaseByQuest, [questId]: 2 as const } };
+      }
+      if (!(questId in s.hybridPhaseByQuest)) return s;
+      const next = { ...s.hybridPhaseByQuest };
+      delete next[questId];
+      return { hybridPhaseByQuest: next };
+    }),
 
   setFocus: (focus) => {
     // A non-finite input (NaN/±Infinity from a buggy caller) is IGNORED —
@@ -90,7 +113,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   completeQuest: (questId) => {
     if (get().completedQuests.includes(questId)) return false;
-    set((s) => ({ completedQuests: [...s.completedQuests, questId] }));
+    set((s) => {
+      // Quest tuntas: catatan fase HYBRID-nya selesai masa tugasnya —
+      // membuka quest yang sudah tuntas selalu mulai dari fase 1 (PT2-F6).
+      const hybridPhaseByQuest = { ...s.hybridPhaseByQuest };
+      delete hybridPhaseByQuest[questId];
+      return {
+        completedQuests: [...s.completedQuests, questId],
+        hybridPhaseByQuest,
+      };
+    });
     eventBus.emit('QUEST_COMPLETED', { questId });
     return true;
   },
@@ -111,11 +143,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       completedQuests: clean.completedQuests,
       codeByQuest: clean.codeByQuest,
       focus: clean.focus,
+      hybridPhaseByQuest: clean.hybridPhaseByQuest ?? {},
     });
   },
 
   resetProgress: () =>
-    set({ completedQuests: [], codeByQuest: {}, focus: FOCUS_MAX, pikoLine: null }),
+    set({
+      completedQuests: [],
+      codeByQuest: {},
+      focus: FOCUS_MAX,
+      hybridPhaseByQuest: {},
+      pikoLine: null,
+    }),
 }));
 
 /** Snapshot of exactly the fields the save system persists. */
@@ -124,5 +163,6 @@ export function selectPersistedProgress(state: GameStore): PersistedProgress {
     completedQuests: state.completedQuests,
     codeByQuest: state.codeByQuest,
     focus: state.focus,
+    hybridPhaseByQuest: state.hybridPhaseByQuest,
   };
 }

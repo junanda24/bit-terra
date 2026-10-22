@@ -8,11 +8,18 @@ import type { WorldHandle } from '../../world/createWorld';
 import { DialogueBox } from '../hud/DialogueBox';
 import { PixelButton } from '../design-system/PixelButton';
 import { NineSlicePanel } from '../design-system/NineSlicePanel';
+import { REPAIR_TOAST_MS, enqueueRepair, repairToastInfo } from './repairToast';
 
 export interface WorldScreenProps {
   musicOn: boolean;
   onToggleMusic: () => void;
   onOpenMissions: () => void;
+  /**
+   * false saat Cyber-Deck menutupi desa: toast perayaan WORLD_REPAIR
+   * menunggu di antrean dan baru tampil (dan menghitung waktu tampilnya)
+   * setelah pemain kembali ke desa — perayaan tidak hangus di balik deck.
+   */
+  active?: boolean;
 }
 
 interface ActiveDialogue {
@@ -32,11 +39,18 @@ type WorldStatus = 'loading' | 'ready' | 'error';
  * Dunia tetap hidup saat Cyber-Deck terbuka (App menyembunyikannya) —
  * posisi pemain dan keadaan desa tidak hilang.
  */
-export function WorldScreen({ musicOn, onToggleMusic, onOpenMissions }: WorldScreenProps) {
+export function WorldScreen({
+  musicOn,
+  onToggleMusic,
+  onOpenMissions,
+  active = true,
+}: WorldScreenProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<WorldHandle | null>(null);
   const [status, setStatus] = useState<WorldStatus>('loading');
   const [prompt, setPrompt] = useState<string | null>(null);
+  const [pendingRepairs, setPendingRepairs] = useState<string[]>([]);
+  const [currentRepair, setCurrentRepair] = useState<string | null>(null);
   const [dialogue, setDialogue] = useState<ActiveDialogue | null>(null);
   const dialogueRef = useRef<ActiveDialogue | null>(null);
   const lineDoneRef = useRef(false);
@@ -90,6 +104,29 @@ export function WorldScreen({ musicOn, onToggleMusic, onOpenMissions }: WorldScr
     eventBus.on('WORLD_PROMPT', onPrompt);
     return () => eventBus.off('WORLD_PROMPT', onPrompt);
   }, []);
+
+  // Perayaan WORLD_REPAIR (Fase 4): scene menerbitkan satu event per
+  // wilayah yang BARU pulih. Masuk antrean di sini; tampil satu per satu
+  // selama REPAIR_TOAST_MS, hanya saat desa benar-benar terlihat (active)
+  // — pemain yang sedang di dalam deck tidak kehilangan perayaannya.
+  useEffect(() => {
+    const onRepair = (e: { area: string }) =>
+      setPendingRepairs((q) => enqueueRepair(q, e.area));
+    eventBus.on('WORLD_REPAIR', onRepair);
+    return () => eventBus.off('WORLD_REPAIR', onRepair);
+  }, []);
+
+  useEffect(() => {
+    if (!active || currentRepair !== null || pendingRepairs.length === 0) return;
+    setCurrentRepair(pendingRepairs[0]);
+    setPendingRepairs((q) => q.slice(1));
+  }, [active, currentRepair, pendingRepairs]);
+
+  useEffect(() => {
+    if (currentRepair === null || !active) return;
+    const timer = setTimeout(() => setCurrentRepair(null), REPAIR_TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [currentRepair, active]);
 
   // Dialog dari scene: buka = dunia pause; tutup = jalan lagi. Pause di
   // bridge dihitung bertumpuk, jadi aman walau deck juga membuka di atasnya.
@@ -154,6 +191,8 @@ export function WorldScreen({ musicOn, onToggleMusic, onOpenMissions }: WorldScr
     worldBridge.touch.y = 0;
     setStick({ x: 0, y: 0 });
   };
+
+  const repairInfo = currentRepair ? repairToastInfo(currentRepair) : null;
 
   return (
     <div
@@ -234,6 +273,35 @@ export function WorldScreen({ musicOn, onToggleMusic, onOpenMissions }: WorldScr
           {musicOn ? 'Musik: Nyala' : 'Musik: Mati'}
         </PixelButton>
       </div>
+
+      {/* Toast perayaan perbaikan desa: tidak mencuri fokus (pointer-events
+          none, tanpa tombol), hilang sendiri, antrean menunggu giliran. */}
+      {repairInfo && status === 'ready' && (
+        <div className="pointer-events-none absolute left-1/2 top-3 z-10 w-[min(430px,86vw)] -translate-x-1/2">
+          <NineSlicePanel variant="wood">
+            <div className="px-3.5 py-2.5 text-center" role="status">
+              <p
+                className="text-[11px] font-bold uppercase tracking-[0.14em]"
+                style={{ color: 'var(--bt-sun)' }}
+              >
+                Desa Membaik
+              </p>
+              <p className="mt-0.5 text-[15px] font-semibold leading-snug" style={{ color: '#f2ead6' }}>
+                {repairInfo.title}
+              </p>
+              <p className="mt-1 text-[13px] leading-snug" style={{ color: 'rgba(242,234,214,0.85)' }}>
+                <span style={{ color: 'var(--bt-amber)' }}>Piko: </span>
+                {repairInfo.pikoLine}
+              </p>
+              {pendingRepairs.length > 0 && (
+                <p className="mt-1 text-[11px]" style={{ color: 'rgba(242,234,214,0.6)' }}>
+                  +{pendingRepairs.length} kabar baik lain menunggu
+                </p>
+              )}
+            </div>
+          </NineSlicePanel>
+        </div>
+      )}
 
       {/* Petunjuk interaksi */}
       {prompt && !dialogue && status === 'ready' && (

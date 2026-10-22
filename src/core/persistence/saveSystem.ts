@@ -32,7 +32,9 @@ const SAVE_DEBOUNCE_MS = 800;
 
 /** Build a fresh, sanitized envelope around a payload. */
 export function buildEnvelope(payload: SavePayload): SaveEnvelope {
-  const clean = sanitizePayloadStrict(payload) ?? { completedQuests: [], codeByQuest: {}, focus: 100 };
+  const clean =
+    sanitizePayloadStrict(payload) ??
+    { completedQuests: [], codeByQuest: {}, focus: 100, hybridPhaseByQuest: {} };
   return { version: SAVE_VERSION, savedAt: new Date().toISOString(), payload: clean };
 }
 

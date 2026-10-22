@@ -35,6 +35,7 @@ import {
 import { generateWorldTextures } from './textures';
 import { BLANK_TEXTURE, CHARACTER_SPECS, PIKO_TEXTURE, SHEEP_TEXTURE } from './textureSpec';
 import { currentPauseCount, worldBridge, type WorldSceneHandle } from './bridgeState';
+import { dayTintAt } from './dayCycle';
 import {
   deriveWorldState,
   newlyRepairedAreas,
@@ -78,6 +79,14 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
   private archImage: Phaser.GameObjects.Image | null = null;
   private sluiceFlowStrip: Phaser.GameObjects.Rectangle | null = null;
   private farmGlow: Phaser.GameObjects.Rectangle | null = null;
+
+  // Siklus siang (Fase 4): kerudung warna selayar penuh di atas dunia.
+  // Cahaya yang DIPANCARKAN objek (lampu bengkel, mekar Pohon Induk)
+  // sengaja digambar DI ATAS kerudung ini (depth 9500) — cahaya tidak
+  // boleh diredupkan oleh tint yang justru menandakan waktu.
+  private dayVeil: Phaser.GameObjects.Rectangle | null = null;
+  private dayReducedMotion = false;
+  private lastTintKey = -1;
 
   private npcs: NpcActor[] = [];
   private sheepSprites = new Map<string, Phaser.GameObjects.Sprite>();
@@ -143,6 +152,25 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setBackgroundColor('#1d2b1a');
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
+
+    // Kerudung siklus siang: persegi selayar, menempel ke kamera
+    // (scrollFactor 0), di atas semua objek dunia (marker prompt 6000,
+    // label 6001) tapi di bawah cahaya lampu/mekar (9500). Warnanya
+    // digerakkan jam scene lewat applyDayTint di update() — jam scene
+    // membeku saat pause, jadi tint ikut berhenti saat deck/dialog
+    // terbuka, bukan melompat saat pemain kembali.
+    this.dayReducedMotion =
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    this.dayVeil = this.add
+      .rectangle(0, 0, this.scale.width, this.scale.height, 0xffffff, 0)
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(9000);
+    this.scale.on('resize', (gameSize: { width: number; height: number }) => {
+      this.dayVeil?.setSize(gameSize.width, gameSize.height);
+    });
+    this.lastTintKey = -1;
+    this.applyDayTint(0);
 
     worldBridge.scene = this;
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -231,7 +259,7 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
         img.setTexture(this.state.workshopLampOn ? 'obj_lamp_on' : 'obj_lamp_off');
         this.lampGlow = this.add
           .circle(o.tileX * TILE_SIZE + 16, o.tileY * TILE_SIZE + 10, 42, 0xf4b41b, 0.13)
-          .setDepth(4500)
+          .setDepth(9500) // di atas kerudung siang (9000): cahaya lampu tidak diredupkan tint
           .setVisible(this.state.workshopLampOn);
       }
       if (o.id === 'pen_gate') {
@@ -265,7 +293,7 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
         // murni oleh deriveWorldState.motherTreeBlooming.
         this.canopyGlow = this.add
           .circle(19.5 * TILE_SIZE, 4 * TILE_SIZE, 120, 0xf4b41b, 0.1)
-          .setDepth(4400)
+          .setDepth(9500) // di atas kerudung siang (9000): mekar tetap bercahaya di petang
           .setVisible(this.state.motherTreeBlooming);
         if (this.state.motherTreeBlooming) img.setTint(0xffe2a0);
       }
@@ -568,6 +596,20 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
     }
   }
 
+  /**
+   * Terapkan tint siang untuk waktu scene `elapsedMs`. setFillStyle hanya
+   * dipanggil saat warna/alpha benar-benar berubah (dibulatkan ke 1/255)
+   * supaya tidak ada churn gaya per frame.
+   */
+  private applyDayTint(elapsedMs: number): void {
+    if (!this.dayVeil) return;
+    const tint = dayTintAt(elapsedMs, this.dayReducedMotion);
+    const key = (tint.color << 8) | Math.round(tint.alpha * 255);
+    if (key === this.lastTintKey) return;
+    this.lastTintKey = key;
+    this.dayVeil.setFillStyle(tint.color, tint.alpha);
+  }
+
   pauseWorld(): void {
     // Handle ini hanya diterbitkan di akhir create(), jadi sys selalu siap.
     if (this.sys) this.sys.pause();
@@ -616,6 +658,9 @@ export class VillageScene extends Phaser.Scene implements WorldSceneHandle {
   }
 
   update(): void {
+    // Tint siang mengikuti jam scene — update() tidak dipanggil saat
+    // scene di-pause, jadi tint otomatis membeku bersama dunia.
+    this.applyDayTint(this.time.now);
     if (!this.player || !this.player.body) return;
 
     // --- gerak pemain (keyboard + joystick sentuh bersama)

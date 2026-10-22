@@ -60,12 +60,30 @@ export function sanitizeFocusValue(raw: unknown): number {
 }
 
 /**
+ * Peta fase HYBRID per quest (PT2-F6): hanya fase 2 yang pernah dicatat,
+ * jadi hanya entri bernilai persis angka 2 yang sah — entri lain (1,
+ * string "2", objek) dibuang. Dibangun dengan Object.fromEntries supaya
+ * kunci "__proto__" tetap properti milik sendiri.
+ */
+export function sanitizeHybridPhaseMap(raw: unknown): Record<string, 2> {
+  if (!isRecord(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw).filter(([, v]) => v === 2),
+  ) as Record<string, 2>;
+}
+
+/** Bentuk ketat peta fase: record yang SEMUA nilainya persis 2. */
+export function isValidHybridPhaseMap(raw: unknown): raw is Record<string, 2> {
+  return isRecord(raw) && Object.values(raw).every((v) => v === 2);
+}
+
+/**
  * Validasi ketat untuk envelope save (file `.bitterra` / baris DB).
  * Mengembalikan payload bersih, atau null bila ADA field yang rusak.
  */
 export function sanitizePayloadStrict(raw: unknown): PersistedProgress | null {
   if (!isRecord(raw)) return null;
-  const { completedQuests, codeByQuest, focus } = raw;
+  const { completedQuests, codeByQuest, focus, hybridPhaseByQuest } = raw;
   if (!Array.isArray(completedQuests) || !completedQuests.every((q) => typeof q === 'string')) {
     return null;
   }
@@ -73,10 +91,17 @@ export function sanitizePayloadStrict(raw: unknown): PersistedProgress | null {
     return null;
   }
   if (typeof focus !== 'number' || !Number.isFinite(focus)) return null;
+  // Field fase HYBRID bersifat opsional (save lama tidak punya): absen =
+  // sah dan berarti "semua quest di fase 1"; hadir tapi rusak = payload
+  // ditolak, sama seperti field wajib lainnya.
+  if (hybridPhaseByQuest !== undefined && !isValidHybridPhaseMap(hybridPhaseByQuest)) {
+    return null;
+  }
   return {
     completedQuests: [...(completedQuests as string[])],
     codeByQuest: { ...(codeByQuest as Record<string, string>) },
     focus: clampFocus(focus),
+    hybridPhaseByQuest: { ...(hybridPhaseByQuest ?? {}) },
   };
 }
 
@@ -86,11 +111,12 @@ export function sanitizePayloadStrict(raw: unknown): PersistedProgress | null {
  */
 export function sanitizePersistedProgress(raw: unknown): PersistedProgress {
   if (!isRecord(raw)) {
-    return { completedQuests: [], codeByQuest: {}, focus: FOCUS_MAX };
+    return { completedQuests: [], codeByQuest: {}, focus: FOCUS_MAX, hybridPhaseByQuest: {} };
   }
   return {
     completedQuests: sanitizeQuestList(raw.completedQuests),
     codeByQuest: sanitizeCodeMap(raw.codeByQuest),
     focus: sanitizeFocusValue(raw.focus),
+    hybridPhaseByQuest: sanitizeHybridPhaseMap(raw.hybridPhaseByQuest),
   };
 }

@@ -1,4 +1,5 @@
 import type { QuestDefinition } from '../../shared/types';
+import type { PersistedProgress } from '../../core/bridge/gameStore';
 import { ResultDiffChecker } from '../../sandbox/sql/ResultDiffChecker';
 
 /**
@@ -28,6 +29,62 @@ export function hybridPhaseInitialCode(
   phase: HybridPhase,
 ): string {
   return phase === 2 ? (quest.hybridBotInitialCode ?? '') : quest.initialCode;
+}
+
+/* ------------------------------------------------------------------ */
+/* Persistensi fase antar-kunjungan (PT2-F6)                           */
+/* ------------------------------------------------------------------ */
+
+/** Fase tersimpan sebuah quest dari progres: hanya 2 yang pernah dicatat. */
+export function savedHybridPhase(
+  progress: Pick<PersistedProgress, 'hybridPhaseByQuest'>,
+  questId: string,
+): HybridPhase {
+  return progress.hybridPhaseByQuest?.[questId] === 2 ? 2 : 1;
+}
+
+/**
+ * Rencana membuka quest HYBRID, diputuskan murni dari progres tersimpan:
+ * - 'phase1'     — mulai biasa dari fase 1 (tidak ada catatan fase 2,
+ *                  quest bukan HYBRID, atau quest sudah tuntas: catatan
+ *                  fase dibersihkan saat penyelesaian, jadi ini juga
+ *                  pertahanan terhadap save janggal).
+ * - 'replay'     — catatan fase 2 ada DAN kode fase 1 tersimpan: putar
+ *                  ulang kode fase 1 secara diam-diam di mesin yang baru
+ *                  di-seed untuk membangun kembali keadaan tabel yang
+ *                  sudah diperbaiki, lalu masuk fase 2.
+ * - 'clear-stale'— catatan fase 2 ada tetapi kode fase 1 hilang: catatan
+ *                  basi, hapus dan mulai dari fase 1 dengan jujur.
+ */
+export type HybridReopenPlan =
+  | { kind: 'phase1' }
+  | { kind: 'replay'; phase1Code: string }
+  | { kind: 'clear-stale' };
+
+export function planHybridReopen(args: {
+  isHybrid: boolean;
+  savedPhase: HybridPhase;
+  phase1Code: string | undefined;
+  alreadyCompleted: boolean;
+}): HybridReopenPlan {
+  if (!args.isHybrid || args.savedPhase !== 2 || args.alreadyCompleted) {
+    return { kind: 'phase1' };
+  }
+  if (!args.phase1Code) return { kind: 'clear-stale' };
+  return { kind: 'replay', phase1Code: args.phase1Code };
+}
+
+/**
+ * Nasib sesi sesudah replay fase 1 dinilai: lulus → fase 2 (catatan fase
+ * dipertahankan); gagal → kembali ke fase 1 dan catatan fase DIHAPUS
+ * (pemain mengulang fase 1 dengan sadar, bukan diam-diam).
+ */
+export function resolveHybridReplay(assessment: {
+  pass: boolean;
+}): { phase: HybridPhase; clearSavedPhase: boolean } {
+  return assessment.pass
+    ? { phase: 2, clearSavedPhase: false }
+    : { phase: 1, clearSavedPhase: true };
 }
 
 /** Kunci reaksi kegagalan penilaian keadaan akhir tabel. */

@@ -182,7 +182,11 @@ export function CyberDeckFrame({
           }}
         >
           {children}
-          <CRTScanlineOverlay opacity={0.4} />
+          {/* Kaca CRT statis (Fase 4): kekuatan dikalibrasi di komponen —
+              puncak peredupan scanline 8%/garis. Tanpa toggle terpisah:
+              gugus lampu sudah membawa status deck, dan satu saklar
+              preferensi lagi hanya menambah permukaan keadaan. */}
+          <CRTScanlineOverlay opacity={0.5} />
         </div>
         {rightRail ? (
           <div className="flex w-[86px] shrink-0 flex-col items-center justify-start pt-3">

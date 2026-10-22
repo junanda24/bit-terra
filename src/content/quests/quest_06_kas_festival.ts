@@ -98,7 +98,7 @@ INSERT INTO kas_festival (id, anggota_id, kategori, jumlah) VALUES (10, 4, 'Pang
   onSuccessWorldEvents: ['FESTIVAL_CASH_BALANCED', 'STALL_LIST_CLEAR'],
   onFailFunnyReactions: {
     too_many_rows:
-      'Daftarnya lebih panjang dari daftar undangan festival. Pak Tua Query menggeleng pelan: "Ini semua setoran dari semua kategori, Nak. Yang kita cari cuma penyewa stan di atas seratus lima puluh ribu. Saringanmu ada yang bocor — periksa kategori dan jumlahnya sekali lagi."',
+      'Daftarnya lebih panjang dari daftar undangan festival. Pak Tua Query menggeleng pelan: "Yang kita cari cuma penyewa stan di atas seratus lima puluh ribu, Nak — tidak lebih dari itu. Ada saringanmu yang bocor: periksa lagi kategorinya, lalu batas jumlahnya. Dan ingat — \'di atas 150.000\' tidak memasukkan setoran yang jumlahnya pas 150.000."',
     no_rows:
       'Hasilnya kosong. Pak Tua Query mengetuk buku kas dua kali, seperti memastikan bukunya tidak tertidur: "Penyewa stan itu ADA, Nak — stan-stan itu tidak menyewa dirinya sendiri. Periksa lagi pasangan JOIN-mu dan nilai yang kamu saring; mungkin nama kategorinya yang tidak persis."',
     wrong_column:

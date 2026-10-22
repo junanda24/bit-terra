@@ -12,7 +12,11 @@ import { Howler } from 'howler';
  *     Track B = chiptune square arpeggio + soft hat
  *   setCodingMode(true) crossfades A 100%→40% and B 0%→100% over 1.5 s
  *   (BLUEPRINT §4B vertical mixing). Music is OFF until start() is called
- *   from a user gesture. Master volume persists in localStorage
+ *   from a user gesture.
+ * - Village ambience (Fase 4): a looping wind bed + sparse bird chirps on
+ *   their own bus under the music, scheduled from the same tick; present
+ *   in village mode, faded out in coding mode, governed by the same
+ *   toggle/volume as the music. See startAmbience(). Master volume persists in localStorage
  *   `bitterra:music` and is mirrored to Howler (file-based layers in later
  *   phases play through Howler under the same master volume).
  * - Exactly one AudioContext, created lazily, reused across start/stop.
@@ -29,6 +33,21 @@ const STEP_DUR = 60 / BPM / 2;
 const SWING = 0.14; // fraction of a step, applied to odd 8ths
 const FADE_S = 1.5;
 const MUSIC_LEVEL = 0.5;
+
+/* Village ambience (Fase 4): a whisper-quiet synthesized nature layer
+   UNDER the music — a looping wind bed plus sparse bird chirps. It rides
+   the musicBus, so the one music toggle and the persisted master volume
+   govern it exactly like the tracks; it follows the same coding-mode
+   crossfade (village = present, deck = faded out). Levels are source-
+   level gains into ambBus: wind 0.026 ± 0.012 (LFO 0.07 Hz), chirps peak
+   0.032 — comparable to a single pad note, never a soundscape. */
+const WIND_GAIN = 0.026;
+const WIND_LFO_DEPTH = 0.012;
+const WIND_LFO_HZ = 0.07;
+const WIND_FILTER_HZ = 420;
+const CHIRP_PEAK = 0.032;
+const CHIRP_MIN_DELAY_S = 4.5;
+const CHIRP_MAX_DELAY_S = 11;
 
 interface Chord {
   bass: number; // midi
@@ -73,6 +92,7 @@ export class SoundController {
   private musicBus: GainNode | null = null;
   private busA: GainNode | null = null;
   private busB: GainNode | null = null;
+  private ambBus: GainNode | null = null;
   private sfxBus: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
   private sources = new Set<AudioScheduledSourceNode>();
@@ -80,6 +100,8 @@ export class SoundController {
   private schedulerTimer: ReturnType<typeof setInterval> | null = null;
   private step = 0;
   private nextStepTime = 0;
+  private ambienceOn = false;
+  private nextChirpAt = 0;
   private started = false;
   private codingMode = false;
   private volume: number = loadPersistedVolume();
@@ -114,6 +136,7 @@ export class SoundController {
         this.step = 0;
         this.nextStepTime = this.ctx.currentTime + 0.08;
         this.applyMix(0); // snap to the current coding-mode mix
+        this.startAmbience();
         this.schedulerTimer = setInterval(() => this.tick(), 25);
       }
       return true;
@@ -129,6 +152,11 @@ export class SoundController {
       this.schedulerTimer = null;
     }
     this.started = false;
+    // Ambience sources (wind loop + LFO) live in this.sources like every
+    // other source, so the stop sweep below silences them too; the flags
+    // reset so the next start() rebuilds exactly one ambience layer.
+    this.ambienceOn = false;
+    this.nextChirpAt = 0;
     for (const src of this.sources) {
       try {
         src.stop();
@@ -173,9 +201,14 @@ export class SoundController {
     const now = this.ctx.currentTime;
     const aTarget = (this.codingMode ? 0.4 : 1.0) * MUSIC_LEVEL;
     const bTarget = (this.codingMode ? 1.0 : 0.0) * MUSIC_LEVEL;
+    // Ambience belongs to the village: full under Track A out in the
+    // village, faded to zero while the Cyber-Deck is open (coding mode),
+    // on the same 1.5 s crossfade as the tracks.
+    const ambTarget = this.codingMode ? 0.0 : 1.0;
     for (const [bus, target] of [
       [this.busA, aTarget],
       [this.busB, bTarget],
+      ...(this.ambBus ? [[this.ambBus, ambTarget] as const] : []),
     ] as const) {
       bus.gain.cancelScheduledValues(now);
       bus.gain.setValueAtTime(bus.gain.value, now);
@@ -203,6 +236,9 @@ export class SoundController {
     this.busA.connect(this.musicBus);
     this.busB = ctx.createGain();
     this.busB.connect(this.musicBus);
+    this.ambBus = ctx.createGain();
+    this.ambBus.gain.value = 0; // applyMix snaps/fades it to the mode level
+    this.ambBus.connect(this.musicBus);
 
     this.sfxBus = ctx.createGain();
     this.sfxBus.gain.value = 0.9;
@@ -239,6 +275,96 @@ export class SoundController {
       this.scheduleStep(this.step, this.nextStepTime);
       this.nextStepTime += STEP_DUR;
       this.step += 1;
+    }
+    this.scheduleAmbience();
+  }
+
+  /* ------------------------------------------------------------ */
+  /* Village ambience (Fase 4)                                     */
+  /* ------------------------------------------------------------ */
+
+  /**
+   * Start the wind bed exactly once per start(): a looping noise source
+   * through a lowpass, its gain breathed by a slow LFO. Guarded by
+   * `ambienceOn`, and start() itself is guarded by `started`, so scene
+   * remounts and repeated toggles can never stack a second layer — the
+   * lifecycle discipline of the CORE-L9 lag guard, applied to loops.
+   */
+  private startAmbience(): void {
+    if (!this.ctx || !this.ambBus || !this.noiseBuffer || this.ambienceOn) return;
+    const ctx = this.ctx;
+    const wind = ctx.createBufferSource();
+    wind.buffer = this.noiseBuffer;
+    wind.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = WIND_FILTER_HZ;
+    const windGain = ctx.createGain();
+    windGain.gain.value = WIND_GAIN;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = WIND_LFO_HZ;
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.value = WIND_LFO_DEPTH;
+    lfo.connect(lfoDepth);
+    lfoDepth.connect(windGain.gain);
+    wind.connect(filter).connect(windGain).connect(this.ambBus);
+    const now = ctx.currentTime;
+    wind.start(now, Math.random() * 0.3);
+    lfo.start(now);
+    this.track(wind);
+    this.track(lfo);
+    this.ambienceOn = true;
+    this.nextChirpAt = now + 2.0; // first bird arrives soon, then sparsely
+  }
+
+  private chirpDelay(): number {
+    return CHIRP_MIN_DELAY_S + Math.random() * (CHIRP_MAX_DELAY_S - CHIRP_MIN_DELAY_S);
+  }
+
+  /**
+   * Bird chirps are scheduled from the ONE music tick (no extra timer),
+   * and only in village mode — in coding mode the ambience bus is faded
+   * out anyway, so scheduling there would be pure waste. The same
+   * realign-on-stall rule as the music lag guard applies: a long tab
+   * stall moves the next chirp to the future instead of bursting.
+   */
+  private scheduleAmbience(): void {
+    if (!this.ctx || !this.ambBus || !this.started || !this.ambienceOn) return;
+    if (this.codingMode) return;
+    const now = this.ctx.currentTime;
+    if (this.nextChirpAt === 0 || this.nextChirpAt < now - 1) {
+      this.nextChirpAt = now + this.chirpDelay();
+    }
+    if (this.nextChirpAt <= now + 0.12) {
+      this.scheduleChirp(this.nextChirpAt);
+      this.nextChirpAt += this.chirpDelay();
+    }
+  }
+
+  /** One bird: 2–4 quick FM syllables, 2.4–3.1 kHz, peak CHIRP_PEAK. */
+  private scheduleChirp(at: number): void {
+    if (!this.ctx || !this.ambBus) return;
+    const ctx = this.ctx;
+    const syllables = 2 + Math.floor(Math.random() * 3);
+    let t = at;
+    for (let i = 0; i < syllables; i++) {
+      const dur = 0.07 + Math.random() * 0.04;
+      const f0 = 2400 + Math.random() * 700;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(f0, t);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 1.18, t + dur * 0.45);
+      osc.frequency.exponentialRampToValueAtTime(f0 * 0.92, t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(CHIRP_PEAK, t + dur * 0.3);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(g).connect(this.ambBus);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+      this.track(osc);
+      t += dur + 0.03 + Math.random() * 0.03;
     }
   }
 

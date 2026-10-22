@@ -10,6 +10,14 @@ html, body { background: var(--bt-slate); }
 /* Kanvas dunia Phaser (Fase 2): piksel chunky, jangan dihaluskan browser. */
 .bt-world-canvas canvas { image-rendering: pixelated; display: block; }
 
+/* Kaca CRT Cyber-Deck (Fase 4) melapisi seluruh layar bingkai, tapi
+   permukaan editor adalah permukaan BACA utama anak — angkat editor ke
+   atas lapisan kaca (overlay z-20) sebisa stacking context mengizinkan.
+   Bila konteks transform leluhur menahannya, scanline di komponen CRT
+   sudah dikalibrasi cukup tipis (puncak 8% per garis 1px) untuk tetap
+   aman di atas teks. */
+.bt-deck-root .cm-editor { position: relative; z-index: 30; }
+
 /* Fokus keyboard harus TERLIHAT di semua kontrol (audit UI F-04: tuas RUN
    memakai outline-none tanpa pengganti). */
 :focus-visible {

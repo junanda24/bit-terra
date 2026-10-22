@@ -27,6 +27,9 @@ import {
   assessFinalTableState,
   hybridPhaseCodeKey,
   hybridPhaseInitialCode,
+  planHybridReopen,
+  resolveHybridReplay,
+  savedHybridPhase,
   type HybridPhase,
 } from './hybridLogic';
 import { CyberDeckFrame, type LampState } from './CyberDeckFrame';
@@ -36,8 +39,8 @@ import { SqlTableVisualizer } from '../visualizer/SqlTableVisualizer';
 import { BotGridStage, type BotPose } from '../visualizer/BotGridStage';
 import {
   botQuestVerdict,
-  botScenarioFailKey,
   evaluateBotExpectation,
+  resolveScenarioFailKey,
 } from '../visualizer/botStageLogic';
 import { PikoMascotWidget } from '../visualizer/PikoMascotWidget';
 import { FocusBar } from '../hud/FocusBar';
@@ -189,6 +192,9 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   const deductFocusRef = useRef(false);
   const editorRef = useRef<InteractiveEditorHandle | null>(null);
   const experimentNotedRef = useRef(false);
+  // Pemulihan fase HYBRID (PT2-F6) berjalan tepat satu kali per quest
+  // dibuka, sesudah mesin SQL menyala — bukan setiap dbReady berkedip.
+  const hybridRestoreHandledRef = useRef(false);
 
   const isHybrid = quest.mode === 'HYBRID';
   // HYBRID dua fase dalam satu layar: fase 1 diperlakukan persis quest SQL,
@@ -308,6 +314,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     hintIdxRef.current = 0;
     deductFocusRef.current = false;
     experimentNotedRef.current = false;
+    hybridRestoreHandledRef.current = false;
     setDialogue(null);
     setDialogueLineDone(false);
     setIntroSeen(false);
@@ -435,17 +442,11 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   );
 
   /* ---------------- transisi fase HYBRID ---------------- */
-  // Fase 1 (SQL) lulus -> fase 2 (Bot) dimulai di layar yang sama: kode
-  // fase 2 dimuat dari kunci simpannya sendiri, panggung bot disiapkan,
-  // dan dialog transisi hasil karya penulis diputar. Database fase 1
-  // TIDAK dibongkar — runner yang sama tetap hidup sampai deck ditutup.
-  const goHybridPhase2 = useCallback(() => {
-    SoundController.playSFX('success');
-    sayPiko(
-      'Fase 1 tuntas — data akarnya bersih. Sekarang fase 2: antarkan Piko ke terminal kristal.',
-      'happy',
-    );
-    startDialogue(getQuestDialogue(quest.id, 'phase2'));
+  // Badan bersama masuk fase 2: kode fase 2 dimuat dari kunci simpannya
+  // sendiri, panggung bot disiapkan, mode editor berpindah ke Bot.
+  // Dipakai transisi sungguhan (dari verdict fase 1) maupun pemulihan
+  // diam-diam saat deck dibuka kembali (PT2-F6).
+  const applyHybridPhase2 = useCallback(() => {
     const saved = useGameStore.getState().codeByQuest[hybridPhaseCodeKey(quest.id, 2)];
     const next = saved ?? hybridPhaseInitialCode(quest, 2);
     codeRef.current = next;
@@ -459,7 +460,92 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     setBotResetKey((k) => k + 1);
     useGameStore.getState().setCurrentQuest(quest.id, 'BOT_SCRIPT');
     setHybridPhase(2);
-  }, [quest, sayPiko, startDialogue]);
+  }, [quest]);
+
+  // Fase 1 (SQL) lulus -> fase 2 (Bot) dimulai di layar yang sama, dan
+  // dialog transisi hasil karya penulis diputar. Database fase 1 TIDAK
+  // dibongkar — runner yang sama tetap hidup sampai deck ditutup.
+  // Pencapaian fase DICATAT di store (PT2-F6): menutup deck di antara
+  // fase tidak lagi menghapus progres.
+  const goHybridPhase2 = useCallback(() => {
+    SoundController.playSFX('success');
+    sayPiko(
+      'Fase 1 tuntas — data akarnya bersih. Sekarang fase 2: antarkan Piko ke terminal kristal.',
+      'happy',
+    );
+    startDialogue(getQuestDialogue(quest.id, 'phase2'));
+    useGameStore.getState().setHybridPhase(quest.id, 2);
+    applyHybridPhase2();
+  }, [quest, sayPiko, startDialogue, applyHybridPhase2]);
+
+  // Pemulihan fase 2 saat quest HYBRID dibuka kembali (PT2-F6): mesin
+  // baru saja di-seed dari nol, jadi perbaikan fase 1 dibangun ulang
+  // dengan memutar ulang kode fase 1 tersimpan — PERSIS kode yang dulu
+  // lulus (selama fase 2, editor menulis kunci ':fase2', jadi kode fase
+  // 1 beku apa adanya). Replay ini DIAM: tidak ada verdict layar, tidak
+  // ada potongan/hadiah fokus, tidak ada penyelesaian quest. Hasilnya
+  // tetap dinilai assessFinalTableState; bila entah bagaimana tidak
+  // mencapai keadaan yang diharapkan, jangan paksakan fase 2 yang
+  // rusak: catatan fase dihapus, mesin di-seed ulang bersih, dan pemain
+  // mengulang fase 1 dengan penjelasan yang jujur.
+  const restoreHybridPhase2 = useCallback(
+    (phase1Code: string) => {
+      const runner = runnerRef.current;
+      if (!runner) return;
+      let restored = false;
+      try {
+        executeGuardedSql(runner, phase1Code, quest.sqlWritesAllowed === true);
+        const finalRows =
+          runner && quest.sqlSourceTable
+            ? runner.runQuery(`SELECT * FROM "${quest.sqlSourceTable}"`).rows
+            : [];
+        const assessment = quest.expectedFinalTableState
+          ? assessFinalTableState(finalRows, quest.expectedFinalTableState)
+          : { pass: false as const };
+        restored = resolveHybridReplay(assessment).phase === 2;
+      } catch (err) {
+        console.error('[BitTerra] Replay fase 1 HYBRID gagal:', err);
+        logError(err, 'hybrid-restore');
+        restored = false;
+      }
+      if (restored) {
+        refreshSourceRows(runner);
+        applyHybridPhase2();
+        sayPiko(
+          'Data OmniCloud masih utuh seperti terakhir kali — lanjutkan Fase 2.',
+          'happy',
+        );
+        return;
+      }
+      useGameStore.getState().setHybridPhase(quest.id, 1);
+      startEngine();
+      sayPiko(
+        'Data akarnya ternyata harus diperiksa ulang dari Fase 1 — tabelnya sudah Piko segarkan lagi dari awal, ya.',
+        'confused',
+      );
+    },
+    [quest, applyHybridPhase2, refreshSourceRows, sayPiko, startEngine],
+  );
+
+  // Satu kali per quest dibuka, sesudah mesin SQL menyala: putuskan dari
+  // progres tersimpan apakah quest HYBRID ini dibuka di fase 1 biasa,
+  // dipulihkan ke fase 2, atau catatan fasenya sudah basi.
+  useEffect(() => {
+    if (!isHybrid || !dbReady || hybridRestoreHandledRef.current) return;
+    hybridRestoreHandledRef.current = true;
+    const state = useGameStore.getState();
+    const plan = planHybridReopen({
+      isHybrid,
+      savedPhase: savedHybridPhase(state, quest.id),
+      phase1Code: state.codeByQuest[quest.id],
+      alreadyCompleted: state.completedQuests.includes(quest.id),
+    });
+    if (plan.kind === 'replay') {
+      restoreHybridPhase2(plan.phase1Code);
+    } else if (plan.kind === 'clear-stale') {
+      state.setHybridPhase(quest.id, 1);
+    }
+  }, [isHybrid, dbReady, quest.id, restoreHybridPhase2]);
 
   /* ---------------- eksekusi SQL ---------------- */
   const finalizeSql = useCallback(() => {
@@ -726,10 +812,11 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
             ? evaluateBotExpectation(pose, scenario.expected)
             : { pass: false, mismatches: ['position'] };
           if (!check.pass) {
-            funnyFail(
-              scenario.failReactionKey ??
-                (pose ? botScenarioFailKey(pose, scenario.expected) : 'wrong_result'),
-            );
+            // Urutan dahulukan PT2-F3: penyebab pose yang presisi
+            // (tidak pernah boot / tabrakan) mengalahkan kunci tertulis
+            // skenario — skrip tanpa boot() dinarasikan wrong_order,
+            // bukan soal pintu.
+            funnyFail(pose ? resolveScenarioFailKey(pose, scenario) : 'wrong_result');
             return;
           }
         }

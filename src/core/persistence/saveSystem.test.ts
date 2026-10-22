@@ -16,6 +16,10 @@ const samplePayload: SavePayload = {
   completedQuests: ['q1-bangun-piko'],
   codeByQuest: { 'q1-bangun-piko': 'piko.boot();' },
   focus: 80,
+  // Bentuk payload terkini (PT2-F6): sanitasi selalu mengeluarkan field
+  // ini; payload warisan tanpanya dinormalkan menjadi {} (dites di
+  // core/bridge/hybridPhase.test.ts).
+  hybridPhaseByQuest: {},
 };
 
 function memoryStorage(): KeyValueStorage & { map: Map<string, string> } {
