@@ -4,6 +4,7 @@ import {
   botStageStatusText,
   createBotStageReducer,
   createBotStageState,
+  fitStageBox,
   normalizeMoveSteps,
   type BotStageAction,
   type BotStageState,
@@ -161,5 +162,30 @@ describe('label status (F-12b)', () => {
   it('sukses → "Daya terisi penuh"', () => {
     const s = run([bot('boot'), bot('move', 3), bot('charge')]);
     expect(botStageStatusText(s)).toBe('Daya terisi penuh');
+  });
+});
+
+describe('fitStageBox — rasio grid terkunci (audit layout B)', () => {
+  it('kontainer tinggi-sempit: lebar yang membatasi', () => {
+    // 419x543 (kasus nyata 1280px) untuk grid 8x5 → sel 52.375 persegi.
+    const box = fitStageBox(419, 543, 8, 5);
+    expect(box.width).toBeCloseTo(419, 1);
+    expect(box.height).toBeCloseTo(261.9, 1);
+    expect(box.width / 8).toBeCloseTo(box.height / 5, 6);
+  });
+
+  it('kontainer lebar-pendek: tinggi yang membatasi', () => {
+    const box = fitStageBox(900, 200, 8, 5);
+    expect(box.height).toBeCloseTo(200, 1);
+    expect(box.width).toBeCloseTo(320, 1);
+  });
+
+  it('kontainer pas rasio: terisi penuh', () => {
+    expect(fitStageBox(800, 500, 8, 5)).toEqual({ width: 800, height: 500 });
+  });
+
+  it('kontainer 0/negatif: kotak 0, tidak NaN', () => {
+    expect(fitStageBox(0, 100, 8, 5)).toEqual({ width: 0, height: 0 });
+    expect(fitStageBox(100, -5, 8, 5)).toEqual({ width: 0, height: 0 });
   });
 });

@@ -29,6 +29,9 @@ export interface LintError {
   column?: number;
   message: string;
   suggestion?: string;
+  /** Kode kategori opsional (mis. 'blank' untuk blanko ___ pada template) —
+   * dipakai UI untuk menggabungkan pesan sejenis (audit layout F). */
+  code?: string;
 }
 
 export type PikoMood = 'normal' | 'happy' | 'confused' | 'shocked';

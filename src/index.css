@@ -6,3 +6,22 @@
 }
 html, body { background: var(--bt-slate); }
 .pixelated { image-rendering: pixelated; }
+
+/* Fokus keyboard harus TERLIHAT di semua kontrol (audit UI F-04: tuas RUN
+   memakai outline-none tanpa pengganti). */
+:focus-visible {
+  outline: 2px solid var(--bt-amber);
+  outline-offset: 2px;
+}
+
+/* Anggaran tinggi viewport pendek (audit ui-ux koreksi 5): di layar
+   <=760px, banner tujuan kolaps, kaki bingkai hilang, dan pita visualizer
+   SQL menyusut — ruang editor adalah prioritas terakhir yang dikorbankan. */
+.bt-deck-root {
+  --bt-vis-band: 248px;
+}
+@media (max-height: 760px) {
+  .bt-objective { display: none; }
+  .bt-frame-foot { display: none; }
+  .bt-deck-root { --bt-vis-band: 200px; }
+}

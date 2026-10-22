@@ -8,7 +8,11 @@
 
 import { parse } from 'acorn';
 import type { LintError } from '../../shared/types';
-import { syntaxError, unknownFunctionError } from './FriendlyErrorTranslator';
+import {
+  blankPlaceholderError,
+  syntaxError,
+  unknownFunctionError,
+} from './FriendlyErrorTranslator';
 import { staticPath } from './StepInterpreter';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,6 +73,13 @@ export function lintScript(code: string, allowedFunctions: string[]): LintError[
     const key = `${line}|${name}`;
     if (seen.has(key)) return;
     seen.add(key);
+    // Blanko template (piko.___ / ___) bukan modul hilang: pesan khusus
+    // yang pendek, tanpa daftar modul (audit layout F).
+    const lastSegment = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : name;
+    if (/^_+$/.test(lastSegment)) {
+      errors.push(blankPlaceholderError(line).toLintError());
+      return;
+    }
     errors.push(unknownFunctionError(name, line, allowed).toLintError());
   };
 

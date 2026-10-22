@@ -59,7 +59,7 @@ export function CartridgeBar({ cartridges, onInsert, disabled = false }: Cartrid
             animate={{ x: [0, -2, 2, -1, 0], y: [0, 1, 0, 0, 0] }}
             transition={{ duration: 0.16, ease: 'linear' }}
             whileHover={disabled ? undefined : { y: -3 }}
-            className="relative select-none rounded-[3px] px-3 pb-1.5 pt-2 text-[13px] font-bold uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-45"
+            className="relative flex min-h-[44px] select-none items-center justify-center rounded-[3px] px-3 pb-1.5 pt-2 text-[13px] font-bold uppercase tracking-wider disabled:cursor-not-allowed disabled:opacity-45"
             style={{
               fontFamily: "'Pixelify Sans', sans-serif",
               backgroundColor: c.face,

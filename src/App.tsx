@@ -111,7 +111,9 @@ function AppShell() {
   const handleQuestClick = (quest: QuestDefinition) => {
     const store = useGameStore.getState();
     store.setCurrentQuest(quest.id, quest.mode === 'HYBRID' ? store.editorMode : quest.mode);
-    store.sayPiko(quest.storyContext, 'normal');
+    // Teks cerita TIDAK lagi disalurkan ke balon Piko (audit layout E:
+    // balon 170px + 561 karakter = menara teks). Cerita hidup di dialog
+    // pembuka (modal) dan tab Cerita di dalam deck.
     setDeckOpen(true);
   };
 
@@ -150,40 +152,19 @@ function AppShell() {
   if (ready && deckOpen && selectedQuest) {
     return (
       <div
-        className="min-h-screen"
+        className="h-dvh overflow-hidden"
         style={{
           background: 'var(--bt-slate)',
           color: 'var(--bt-bezel)',
           fontFamily: '"Pixelify Sans", sans-serif',
         }}
       >
-        <header className="mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-3 px-4 pb-2 pt-6">
-          <button
-            type="button"
-            onClick={() => setDeckOpen(false)}
-            className="border-2 px-3 py-2 text-sm font-semibold"
-            style={{ borderColor: 'var(--bt-copper)', color: 'var(--bt-bezel)' }}
-          >
-            Kembali ke Daftar Quest
-          </button>
-          <span
-            className="text-xs"
-            style={{ fontFamily: '"Press Start 2P", monospace', color: 'var(--bt-amber)' }}
-          >
-            CYBER-DECK
-          </span>
-          <button
-            type="button"
-            onClick={() => void handleMusicToggle()}
-            className="border-2 px-3 py-2 text-sm font-semibold"
-            style={{ borderColor: 'var(--bt-copper)', color: 'var(--bt-bezel)' }}
-          >
-            {musicOn ? 'Musik: Nyala' : 'Musik: Mati'}
-          </button>
-        </header>
-        <main className="mx-auto w-full max-w-6xl px-4 pb-10">
-          <CyberDeckScreen quest={selectedQuest} onClose={() => setDeckOpen(false)} />
-        </main>
+        <CyberDeckScreen
+          quest={selectedQuest}
+          onClose={() => setDeckOpen(false)}
+          musicOn={musicOn}
+          onToggleMusic={() => void handleMusicToggle()}
+        />
       </div>
     );
   }

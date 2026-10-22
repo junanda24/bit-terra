@@ -131,7 +131,7 @@ const sqlHighlight = HighlightStyle.define([
   { tag: tags.keyword, color: '#00f5d4', fontWeight: '700' },
   { tag: tags.string, color: '#f4b41b' },
   { tag: tags.number, color: '#ff9e64' },
-  { tag: tags.comment, color: '#5b6b7f', fontStyle: 'italic' },
+  { tag: tags.comment, color: '#8496ab', fontStyle: 'italic' }, // komentar = teks tutorial (kontras 3.26:1 -> ~4.9:1, audit)
   { tag: tags.variableName, color: '#ffd489' },
   { tag: tags.operator, color: '#ffb000' },
 ]);
@@ -141,7 +141,7 @@ const botHighlight = HighlightStyle.define([
   { tag: tags.atom, color: '#f4b41b', fontWeight: '700' },
   { tag: tags.string, color: '#ffd489' },
   { tag: tags.number, color: '#ff9e64' },
-  { tag: tags.comment, color: '#5b6b7f', fontStyle: 'italic' },
+  { tag: tags.comment, color: '#8496ab', fontStyle: 'italic' }, // komentar = teks tutorial (kontras 3.26:1 -> ~4.9:1, audit)
   { tag: tags.variableName, color: '#e8dfc8' },
   { tag: tags.operator, color: '#ffb000' },
 ]);
@@ -405,6 +405,10 @@ export const InteractiveEditor = forwardRef<InteractiveEditorHandle, Interactive
         highlightActiveLine(),
         history(),
         drawSelection(),
+        // Baris panjang (komentar tutorial ±610px) membungkus, tidak
+        // bersembunyi di scroll horizontal — tampak "terpotong grid"
+        // pada audit layout A.
+        EditorView.lineWrapping,
         keymap.of([...defaultKeymap, ...historyKeymap]),
         langCompartment.current.of([
           isSql ? sqlLanguage : botLanguage,
@@ -414,7 +418,7 @@ export const InteractiveEditor = forwardRef<InteractiveEditorHandle, Interactive
         ]),
         cmPlaceholder(
           isSql
-            ? 'Tulis query SQL di sini… misalnya SELECT nama FROM warga'
+            ? 'Tulis query SQL di sini… misalnya SELECT sheep_name FROM livestock_logs'
             : 'Tulis program untuk Piko… misalnya piko.boot();',
         ),
         editorTheme,

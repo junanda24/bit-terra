@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useReducer, useRef } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import type { QuestDefinition } from '../../shared/types';
 import { eventBus } from '../../core/bridge/eventBus';
 import {
   botStageStatusText,
   createBotStageReducer,
   createBotStageState,
+  fitStageBox,
   normalizeBotAction,
   type BotStageState,
 } from './botStageLogic';
@@ -218,8 +219,35 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
   const cellPctW = 100 / cols;
   const cellPctH = 100 / rows;
 
+  // Kotak panggung berasio grid TERKUNCI (audit layout B): dulu sel digambar
+  // sebagai % dari kontainer panel yang tingginya arbitrer, jadi petak dan
+  // Piko meregang 2,07–2,8x jadi kapsul. Sekarang panggung diukur, kotak
+  // terbesar berasio cols:rows dipasang di tengah, sel = % dari kotak itu.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [box, setBox] = useState({ width: 0, height: 0 });
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const update = () =>
+      setBox(fitStageBox(el.clientWidth, el.clientHeight, cols, rows));
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [cols, rows]);
+  const reduceMotion = useReducedMotion();
+
   return (
-    <div className="relative h-full w-full select-none overflow-hidden" aria-label="Panggung robot Piko">
+    <div
+      ref={wrapRef}
+      className="flex h-full w-full items-center justify-center p-3"
+      role="img"
+      aria-label="Panggung robot Piko"
+    >
+      <div
+        className="relative select-none overflow-hidden"
+        style={{ width: box.width, height: box.height }}
+      >
       {/* lantai papan kayu bengkel */}
       <div
         className="absolute inset-0"
@@ -243,8 +271,12 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
             background:
               'radial-gradient(circle at 50% 45%, rgba(244,180,27,0.5), rgba(244,180,27,0.12) 70%)',
           }}
-          animate={{ opacity: [0.85, 1, 0.85] }}
-          transition={{ duration: 2.4, repeat: Infinity, ease: 'easeInOut' }}
+          animate={reduceMotion ? { opacity: 1 } : { opacity: [0.85, 1, 0.85] }}
+          transition={
+            reduceMotion
+              ? { duration: 0 }
+              : { duration: 2.4, repeat: Infinity, ease: 'easeInOut' }
+          }
         >
           <SunPatch />
         </motion.div>
@@ -314,6 +346,7 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
         }}
       >
         {botStageStatusText(pose)}
+      </div>
       </div>
     </div>
   );

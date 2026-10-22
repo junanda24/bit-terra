@@ -33,3 +33,26 @@ describe('ScriptLinter', () => {
     expect(lintScript(code, ALLOWED)).toEqual([]);
   });
 });
+
+describe('blanko template ___ (audit layout F)', () => {
+  it('piko.___ menghasilkan error berkode blank TANPA daftar modul', () => {
+    const errors = lintScript('piko.___();', ALLOWED);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe('blank');
+    expect(errors[0].message).toContain('bagian kosong');
+    expect(errors[0].suggestion ?? '').not.toContain('Modul yang Piko punya');
+  });
+
+  it('dua blanko di dua baris: dua error blank terpisah (UI yang menggabungkan)', () => {
+    const errors = lintScript('piko.___();\npiko.boot();\npiko.___(3);', ALLOWED);
+    expect(errors.map((e) => [e.line, e.code])).toEqual([
+      [1, 'blank'],
+      [3, 'blank'],
+    ]);
+  });
+
+  it('modul tak dikenal biasa TIDAK ikut jadi blank', () => {
+    const errors = lintScript('piko.fly();', ALLOWED);
+    expect(errors[0].code).toBeUndefined();
+  });
+});

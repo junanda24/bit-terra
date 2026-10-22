@@ -87,8 +87,8 @@ export function FocusBar({ focus: focusProp }: FocusBarProps) {
           className="mt-2 text-[13px] leading-snug"
           style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#ffb3a7' }}
         >
-          Kabut otak mulai menebal. Kata Piko: rehat sebentar — kopi hangat di Kafe Byte &amp;
-          Bean, memancing di sungai, atau tidur siang di bengkel.
+          Kabut otak mulai menebal. Fokus pulih +20 setiap kamu menuntaskan misi — dan
+          tombol Minta Petunjuk selalu gratis, tidak memotong fokus sama sekali.
         </p>
       ) : null}
     </div>

@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import type { PikoMood } from '../../shared/types';
 import { useGameStore } from '../../core/bridge/gameStore';
 
@@ -86,47 +86,70 @@ export interface PikoMascotWidgetProps {
 }
 
 /**
- * Piko — maskot robot + "linter hidup". Ekspresi berubah mengikuti mood:
- * senang = lompat + putar, bingung = miring o_O, kaget = guncang X_X.
- * Balon bicara menampilkan pikoLine dari store (diisi lewat sayPiko / PIKO_SAY).
+ * Piko — maskot robot + "linter hidup". Susunan VERTIKAL (audit layout E):
+ * avatar kecil + nama di baris atas, balon bicara SELEBAR KOLOM PENUH di
+ * bawahnya — dulu balon terjepit 170px di samping avatar 118px sehingga
+ * teks cerita 561 karakter jadi menara ±24 baris. Balon hanya untuk kalimat
+ * pendek Piko; teks cerita tinggal di dialog/panel Cerita. Balon adalah
+ * live region (role=status) agar pembaca layar mendengar diagnosis,
+ * petunjuk, dan reaksi Piko (audit UI F-05).
  */
-export function PikoMascotWidget({ mood: moodProp, line: lineProp, size = 118 }: PikoMascotWidgetProps) {
+export function PikoMascotWidget({ mood: moodProp, line: lineProp, size = 56 }: PikoMascotWidgetProps) {
   const storeLine = useGameStore((s) => s.pikoLine);
   const mood: PikoMood = moodProp ?? storeLine?.mood ?? 'normal';
   const line = lineProp !== undefined ? lineProp : storeLine?.text ?? null;
+  const reduceMotion = useReducedMotion();
 
   return (
-    <div className="flex items-start gap-3">
-      <motion.div
-        key={mood}
-        style={{ width: size, height: size, flexShrink: 0 }}
-        initial={{ scale: 0.92 }}
-        animate={
-          mood === 'happy'
-            ? { y: [0, -13, 0, -7, 0], rotate: [0, 0, 360, 360, 360], scale: 1 }
-            : mood === 'shocked'
-              ? { x: [0, -5, 5, -4, 4, 0], rotate: [0, -3, 3, -2, 0, 0], scale: 1 }
-              : mood === 'confused'
-                ? { rotate: [0, -8, -6, -8], y: [0, 1, 0, 1], scale: 1 }
-                : { y: [0, -2.5, 0], rotate: 0, scale: 1 }
-        }
-        transition={
-          mood === 'normal'
-            ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' }
-            : { duration: mood === 'happy' ? 0.85 : 0.55, ease: 'easeOut' }
-        }
-      >
-        <PikoBody mood={mood} />
-      </motion.div>
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-3">
+        <motion.div
+          key={mood}
+          style={{ width: size, height: size, flexShrink: 0 }}
+          initial={{ scale: 0.92 }}
+          animate={
+            reduceMotion
+              ? { scale: 1 }
+              : mood === 'happy'
+                ? { y: [0, -9, 0, -5, 0], rotate: [0, 0, 360, 360, 360], scale: 1 }
+                : mood === 'shocked'
+                  ? { x: [0, -4, 4, -3, 3, 0], rotate: [0, -3, 3, -2, 0, 0], scale: 1 }
+                  : mood === 'confused'
+                    ? { rotate: [0, -8, -6, -8], y: [0, 1, 0, 1], scale: 1 }
+                    : { y: [0, -2, 0], rotate: 0, scale: 1 }
+          }
+          transition={
+            mood === 'normal' && !reduceMotion
+              ? { duration: 2.6, repeat: Infinity, ease: 'easeInOut' }
+              : { duration: mood === 'happy' ? 0.85 : 0.55, ease: 'easeOut' }
+          }
+        >
+          <PikoBody mood={mood} />
+        </motion.div>
+        <div className="min-w-0">
+          <p
+            className="text-[13px] font-bold uppercase tracking-[0.18em]"
+            style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#f4b41b' }}
+          >
+            Piko
+          </p>
+          <p
+            className="text-[12.5px]"
+            style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#8d99ab' }}
+          >
+            Asisten bot bengkel Kakek
+          </p>
+        </div>
+      </div>
 
-      <div className="relative min-w-0 flex-1 pt-2">
+      <div className="relative" role="status" aria-live="polite">
         <AnimatePresence mode="wait">
           {line ? (
             <motion.div
               key={line}
-              initial={{ opacity: 0, y: 6, scale: 0.96 }}
+              initial={{ opacity: 0, y: 6, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -4, scale: 0.97 }}
+              exit={{ opacity: 0, y: -4, scale: 0.98 }}
               transition={{ duration: 0.18 }}
               className="relative rounded-[6px] px-3 py-2"
               style={{
@@ -135,14 +158,14 @@ export function PikoMascotWidget({ mood: moodProp, line: lineProp, size = 118 }:
                 boxShadow: '0 3px 0 rgba(0,0,0,0.4)',
               }}
             >
-              {/* ekor balon */}
+              {/* ekor balon mengarah ke avatar di atas */}
               <span
                 aria-hidden
-                className="absolute -left-[7px] top-5 block h-3 w-3 rotate-45"
+                className="absolute -top-[7px] left-6 block h-3 w-3 rotate-45"
                 style={{
                   backgroundColor: '#fff7ea',
                   borderLeft: '2px solid #8a4f30',
-                  borderBottom: '2px solid #8a4f30',
+                  borderTop: '2px solid #8a4f30',
                 }}
               />
               <p
@@ -157,7 +180,7 @@ export function PikoMascotWidget({ mood: moodProp, line: lineProp, size = 118 }:
               key="idle"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="px-1 pt-2 text-[13.5px] italic"
+              className="px-1 text-[13.5px] italic"
               style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#8d99ab' }}
             >
               Piko siap membantu. Tulis kodemu, aku awasi dari sini.

@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import { motion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import { CRTScanlineOverlay } from '../design-system/CRTScanlineOverlay';
 import { useGameStore } from '../../core/bridge/gameStore';
 import { SoundController } from '../../core/audio/SoundController';
@@ -76,10 +76,11 @@ export function CyberDeckFrame({
   }, []);
 
   const lamp = LAMP[lampState];
+  const reduceMotion = useReducedMotion();
 
   return (
     <div
-      className="relative rounded-[14px] p-3"
+      className="relative flex h-full min-h-0 flex-col rounded-[14px] p-3"
       style={{
         background: 'linear-gradient(160deg, #e6dcc4 0%, #d8ccb8 55%, #c9bb9e 100%)',
         border: '3px solid #8a7c62',
@@ -113,7 +114,7 @@ export function CyberDeckFrame({
           {stickers.length === 0 ? (
             <span
               className="text-[11.5px] italic"
-              style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#7a6f59' }}
+              style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#5d5340' }}
             >
               Selesaikan misi untuk menempel stiker di sini.
             </span>
@@ -147,11 +148,13 @@ export function CyberDeckFrame({
               boxShadow: lamp.glow,
             }}
             animate={
-              lampState === 'running'
-                ? { opacity: [1, 0.45, 1] }
-                : lampState === 'error'
-                  ? { opacity: [1, 0.7, 1] }
-                  : { opacity: 1 }
+              reduceMotion
+                ? { opacity: 1 }
+                : lampState === 'running'
+                  ? { opacity: [1, 0.45, 1] }
+                  : lampState === 'error'
+                    ? { opacity: [1, 0.7, 1] }
+                    : { opacity: 1 }
             }
             transition={
               lampState === 'ready'
@@ -161,7 +164,7 @@ export function CyberDeckFrame({
           />
           <span
             className="text-[11px] font-bold tracking-[0.2em]"
-            style={{ fontFamily: "'Press Start 2P', monospace", color: '#4a4234', fontSize: 9 }}
+            style={{ fontFamily: "'Press Start 2P', monospace", color: '#4a4234', fontSize: 10 }}
           >
             {lamp.text}
           </span>
@@ -169,7 +172,7 @@ export function CyberDeckFrame({
       </div>
 
       {/* Layar + rel kanan */}
-      <div className="flex gap-3">
+      <div className="flex min-h-0 flex-1 gap-3">
         <div
           className="relative min-w-0 flex-1 overflow-hidden rounded-[8px]"
           style={{
@@ -189,8 +192,8 @@ export function CyberDeckFrame({
       </div>
 
       <p
-        className="mt-2 px-1.5 text-[11.5px]"
-        style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#7a6f59' }}
+        className="bt-frame-foot mt-2 px-1.5 text-[11.5px]"
+        style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#5d5340' }}
       >
         Selama Cyber-Deck terbuka, waktu desa berhenti. Pikirkan pelan-pelan, tidak ada yang
         mengejar.

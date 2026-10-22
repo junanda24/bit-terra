@@ -296,3 +296,21 @@ export function botQuestVerdict(
   }
   return { kind: 'fail', reactionKey: pick('wrong_result') };
 }
+
+/**
+ * Kotak panggung terbesar yang muat di kontainer dengan rasio grid utuh
+ * (audit layout B): sel digambar sebagai % dari kotak ini, jadi kotak WAJIB
+ * berasio cols:rows — kalau tidak, sel meregang jadi kapsul. Murni, ditest.
+ */
+export function fitStageBox(
+  containerW: number,
+  containerH: number,
+  cols: number,
+  rows: number,
+): { width: number; height: number } {
+  if (containerW <= 0 || containerH <= 0 || cols <= 0 || rows <= 0) {
+    return { width: 0, height: 0 };
+  }
+  const cell = Math.min(containerW / cols, containerH / rows);
+  return { width: cell * cols, height: cell * rows };
+}

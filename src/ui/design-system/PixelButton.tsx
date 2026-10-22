@@ -39,7 +39,7 @@ export function PixelButton({
     <button
       type="button"
       disabled={disabled}
-      className={`inline-flex select-none items-center justify-center gap-2 rounded-[4px] px-4 py-2 text-[15px] font-semibold tracking-wide transition-transform duration-75 active:translate-y-[3px] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:translate-y-0 ${className}`}
+      className={`inline-flex min-h-[44px] select-none items-center justify-center gap-2 rounded-[4px] px-4 py-2 text-[15px] font-semibold tracking-wide transition-transform duration-75 active:translate-y-[3px] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:translate-y-0 ${className}`}
       style={{
         fontFamily: "'Pixelify Sans', sans-serif",
         backgroundColor: v.face,

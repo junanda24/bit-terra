@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { humanizeWorldEvent, worldEventsSummary } from './dialogueHelpers';
+import { humanizeWorldEvent, summarizeLintErrors, worldEventsSummary } from './dialogueHelpers';
 import { getQuestDialogue } from '../../content/dialogues/q1_q2_dialogues';
 import { quest01BangunPiko } from '../../content/quests/quest_01_bangun_piko';
 import { quest02DombaTersesat } from '../../content/quests/quest_02_domba_tersesat';
@@ -43,5 +43,47 @@ describe('getQuestDialogue(questId, phase) (F-03)', () => {
 
   it('quest tak dikenal → undefined, bukan error', () => {
     expect(getQuestDialogue('quest_99_tidak_ada', 'intro')).toBeUndefined();
+  });
+});
+
+describe('summarizeLintErrors — blanko digabung (audit layout F)', () => {
+  const blank = (line: number) => ({
+    line,
+    code: 'blank',
+    message: 'Masih ada bagian kosong (___) di baris ini.',
+    suggestion: 'Klik cartridge di atas editor untuk mengisinya.',
+  });
+
+  it('dua blanko (baris 10 & 13, kasus nyata Q1) jadi SATU baris ringkasan', () => {
+    const items = summarizeLintErrors([blank(10), blank(13)]);
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toBe('Baris 10 & 13 masih ada bagian kosong (___).');
+    expect(items[0].suggestion).toContain('cartridge');
+  });
+
+  it('satu blanko: kalimat tunggal; tiga blanko: daftar koma + &', () => {
+    expect(summarizeLintErrors([blank(4)])[0].text).toBe(
+      'Baris 4 masih ada bagian kosong (___).',
+    );
+    expect(summarizeLintErrors([blank(9), blank(2), blank(5)])[0].text).toBe(
+      'Baris 2, 5 & 9 masih ada bagian kosong (___).',
+    );
+  });
+
+  it('error lain tetap tampil dengan prefix Baris; total dibatasi 3', () => {
+    const items = summarizeLintErrors([
+      blank(10),
+      { line: 3, message: 'Piko belum punya modul x.' },
+      { line: 7, message: 'Lainnya.', suggestion: 'Saran.' },
+      { line: 9, message: 'Keempat.' },
+    ]);
+    expect(items).toHaveLength(3);
+    expect(items[0].text).toContain('bagian kosong');
+    expect(items[1].text).toBe('Baris 3: Piko belum punya modul x.');
+    expect(items[2].suggestion).toBe('Saran.');
+  });
+
+  it('tanpa blanko & tanpa error: kosong', () => {
+    expect(summarizeLintErrors([])).toEqual([]);
   });
 });

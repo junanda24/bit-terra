@@ -56,7 +56,7 @@ export function getCartridgeSnippet(name: string): string {
 export const CARTRIDGE_COLORS: { face: string; text: string }[] = [
   { face: '#f4b41b', text: '#141820' }, // sun
   { face: '#00f5d4', text: '#0b2b25' }, // mint
-  { face: '#c87d55', text: '#fff7ea' }, // copper
-  { face: '#3b82a6', text: '#eef7ff' }, // river
+  { face: '#c87d55', text: '#141820' }, // copper — teks tinta 4.87:1 (audit kontras: krem hanya 3.03:1)
+  { face: '#3b82a6', text: '#0a0e14' }, // river — teks nyaris-hitam ±4.6:1 (teks terang apa pun mentok 4.2:1 di wajah ini)
   { face: '#4b724f', text: '#eef7e6' }, // moss
 ];

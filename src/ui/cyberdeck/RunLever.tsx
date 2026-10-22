@@ -69,7 +69,7 @@ export function RunLever({ questId, disabled = false }: RunLeverProps) {
             }
           }}
           whileHover={disabled ? undefined : { scale: 1.05 }}
-          className={`relative z-10 flex flex-col items-center outline-none ${
+          className={`relative z-10 flex min-h-[44px] min-w-[44px] flex-col items-center justify-center ${
             disabled ? 'cursor-not-allowed opacity-45' : 'cursor-grab active:cursor-grabbing'
           }`}
         >

@@ -34,7 +34,7 @@ import {
   FOCUS_SUCCESS_REWARD,
   shouldDeductFocusOnFail,
 } from './focusPolicy';
-import { humanizeWorldEvent } from './dialogueHelpers';
+import { humanizeWorldEvent, summarizeLintErrors } from './dialogueHelpers';
 
 /** Fungsi bot yang dikenal Piko di Fase 1 (gerbang registry BotApiBindings). */
 const BASE_BOT_FUNCTIONS = [
@@ -100,6 +100,9 @@ const SLOW_QUERY_LOG_MS = 2_000;
 export interface CyberDeckScreenProps {
   quest: QuestDefinition;
   onClose?: () => void;
+  /** Status musik latar (header tunggal audit layout D menggabungkan chrome App). */
+  musicOn?: boolean;
+  onToggleMusic?: () => void;
 }
 
 /**
@@ -113,7 +116,7 @@ export interface CyberDeckScreenProps {
  * Fokus hanya dipotong untuk kesalahan konsep yang lolos linter pada kode
  * yang sudah diubah pemain (F-04/F-09); quest tuntas mengisinya kembali.
  */
-export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
+export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic }: CyberDeckScreenProps) {
   const sayPiko = useGameStore((s) => s.sayPiko);
   const completedQuests = useGameStore((s) => s.completedQuests);
   const isCompleted = completedQuests.includes(quest.id);
@@ -131,9 +134,17 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const [engineFailed, setEngineFailed] = useState(false);
   const [botResetKey, setBotResetKey] = useState(0);
   // Urutan dialog hasil karya penulis (intro / sukses / funnyFail) yang
-  // sedang diputar di slot DialogueBox (F-03). null = tampilkan storyContext.
+  // sedang diputar di overlay dialog (F-03). Intro tampil sebagai modal
+  // pembuka; dialog cerita lain sebagai bilah bawah tanpa backdrop
+  // (audit layout + koreksi ui-ux: jangan modal-kan funny-fail).
   const [dialogue, setDialogue] = useState<{ lines: DialogueLine[]; idx: number } | null>(null);
   const [dialogueLineDone, setDialogueLineDone] = useState(false);
+  const [dialogueKind, setDialogueKind] = useState<'intro' | 'story'>('story');
+  const [introSeen, setIntroSeen] = useState(false);
+  // Panel pendamping bertab (audit layout): Cerita | Cek Kode; di layar
+  // kecil kolom kiri & deck bergantian lewat tab mobile.
+  const [sideTab, setSideTab] = useState<'cerita' | 'kode'>('cerita');
+  const [mobileTab, setMobileTab] = useState<'deck' | 'piko'>('deck');
 
   const codeRef = useRef(code);
   const runningRef = useRef(false);
@@ -162,19 +173,32 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   );
 
   /* ---------------- urutan dialog (F-03) ---------------- */
-  const startDialogue = useCallback((lines: DialogueLine[] | undefined) => {
-    if (!lines || lines.length === 0) return;
-    setDialogue({ lines, idx: 0 });
-    setDialogueLineDone(false);
-  }, []);
+  const startDialogue = useCallback(
+    (lines: DialogueLine[] | undefined, kind: 'intro' | 'story' = 'story') => {
+      if (!lines || lines.length === 0) return;
+      setDialogueKind(kind);
+      setDialogue({ lines, idx: 0 });
+      setDialogueLineDone(false);
+    },
+    [],
+  );
 
   const advanceDialogue = useCallback(() => {
     setDialogueLineDone(false);
     setDialogue((d) => {
       if (!d) return d;
-      return d.idx + 1 >= d.lines.length ? null : { ...d, idx: d.idx + 1 };
+      if (d.idx + 1 >= d.lines.length) {
+        // Dialog pembuka selesai dibaca → chip "Putar Ulang Pembuka" muncul.
+        if (dialogueKind === 'intro') setIntroSeen(true);
+        return null;
+      }
+      return { ...d, idx: d.idx + 1 };
     });
-  }, []);
+  }, [dialogueKind]);
+
+  const replayIntro = useCallback(() => {
+    startDialogue(getQuestDialogue(quest.id, 'intro'), 'intro');
+  }, [quest.id, startDialogue]);
 
   /* ---------------- inisialisasi mesin SQL ---------------- */
   // Dipisah dari effect agar tombol "Coba Lagi" bisa menyalakan ulang mesin
@@ -232,9 +256,14 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     experimentNotedRef.current = false;
     setDialogue(null);
     setDialogueLineDone(false);
-    // Dialog intro hasil karya penulis diputar saat deck quest dibuka
-    // (surat Kakek untuk Q1, kepanikan Pak Rani untuk Q2) — F-03.
-    startDialogue(getQuestDialogue(quest.id, 'intro'));
+    setIntroSeen(false);
+    setSideTab('cerita');
+    setMobileTab('deck');
+    // Dialog intro hasil karya penulis diputar sebagai MODAL pembuka saat
+    // deck quest dibuka (surat Kakek untuk Q1, kepanikan Pak Rani untuk
+    // Q2) — F-03 + audit layout (CATATAN KAKEK tidak lagi memakan ruang
+    // permanen di atas layar).
+    startDialogue(getQuestDialogue(quest.id, 'intro'), 'intro');
     useGameStore
       .getState()
       .setCurrentQuest(quest.id, quest.mode === 'BOT_SCRIPT' ? 'BOT_SCRIPT' : 'SQL');
@@ -290,6 +319,12 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     }, 150);
     return () => window.clearTimeout(id);
   }, [code, runLint, dbReady]);
+
+  // Panel pendamping berpindah sendiri ke tab Cek Kode begitu ada catatan
+  // linter — pemain tidak perlu berburu pesan error (audit layout).
+  useEffect(() => {
+    if (lintErrors.length > 0) setSideTab('kode');
+  }, [lintErrors]);
 
   /* ---------------- jalur selesai ---------------- */
   const successPath = useCallback(() => {
@@ -604,10 +639,20 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     };
   });
 
+  // Panel CATATAN PIKO menampilkan ringkasan: blanko digabung jadi satu
+  // baris (audit layout F), error lain apa adanya.
+  const lintItems = summarizeLintErrors(lintErrors);
+
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4">
-      {/* Kepala misi */}
-      <header className="flex flex-wrap items-center gap-3">
+    <div className="bt-deck-root relative flex h-full min-h-0 w-full flex-col gap-3 p-4">
+      {/* Header tunggal (audit layout D): kembali + judul misi + musik dalam
+          SATU baris — dulu chrome bertumpuk 4 lapis ±282–382px. */}
+      <header className="flex h-14 shrink-0 flex-wrap items-center gap-3">
+        {onClose ? (
+          <PixelButton variant="slate" onClick={onClose}>
+            Kembali ke Daftar Quest
+          </PixelButton>
+        ) : null}
         <h1
           className="text-[15px] tracking-[0.08em]"
           style={{ fontFamily: "'Press Start 2P', monospace", color: '#ffb000' }}
@@ -619,7 +664,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
           style={{
             fontFamily: "'Pixelify Sans', sans-serif",
             backgroundColor: isBot ? '#c87d55' : '#3b82a6',
-            color: '#fff7ea',
+            color: isBot ? '#141820' : '#0a0e14',
             border: '1.5px solid rgba(0,0,0,0.5)',
           }}
         >
@@ -644,65 +689,56 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
             Misi selesai
           </span>
         ) : null}
-        {onClose ? (
-          <span className="ml-auto">
-            <PixelButton variant="slate" onClick={onClose}>
-              Tutup Deck
+        <span className="ml-auto flex flex-wrap items-center gap-2">
+          {introSeen && !dialogue ? (
+            <PixelButton variant="copper" onClick={replayIntro}>
+              Putar Ulang Pembuka
             </PixelButton>
-          </span>
-        ) : null}
+          ) : null}
+          {onToggleMusic ? (
+            <PixelButton variant="slate" onClick={() => void onToggleMusic()}>
+              {musicOn ? 'Musik: Nyala' : 'Musik: Mati'}
+            </PixelButton>
+          ) : null}
+        </span>
       </header>
 
-      {dialogue ? (
-        <div>
-          <div
-            onClick={() => {
-              // Klik pertama menyelesaikan efek ketik (diurus DialogueBox);
-              // klik berikutnya — setelah baris selesai — lanjut / tutup.
-              if (dialogueLineDone) advanceDialogue();
-            }}
-          >
-            <DialogueBox
-              key={`${quest.id}-dlg-${dialogue.idx}`}
-              name={dialogue.lines[dialogue.idx].speaker}
-              text={dialogue.lines[dialogue.idx].text}
-              onFinished={() => setDialogueLineDone(true)}
-            />
-          </div>
-          <p
-            className="mt-1 h-4 text-right text-[12px] font-semibold uppercase tracking-[0.14em]"
-            style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#8d99ab' }}
-          >
-            {dialogueLineDone
-              ? dialogue.idx + 1 >= dialogue.lines.length
-                ? 'Klik dialog untuk menutup'
-                : 'Klik dialog untuk lanjut'
-              : ''}
-          </p>
-        </div>
-      ) : (
-        <DialogueBox name={npcDisplayName(quest.giverNpcId)} text={quest.storyContext} />
-      )}
+      {/* Banner tujuan ringkas: satu baris, terpotong rapi, kolaps di
+          viewport pendek (lihat index.css .bt-objective). */}
       <p
-        className="-mt-1 text-[15px]"
+        className="bt-objective shrink-0 truncate text-[15px]"
+        title={quest.objectiveText}
         style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#d8ccb8' }}
       >
         <b style={{ color: '#f4b41b' }}>Tujuan:</b> {quest.objectiveText}
       </p>
 
-      <div className="flex flex-col gap-4 lg:flex-row">
-        {/* Kolom pendamping */}
-        <aside className="flex w-full shrink-0 flex-col gap-4 lg:w-[300px]">
+      {/* Tab panel layar kecil: deck & pendamping bergantian tampil —
+          keduanya tetap ter-mount agar state editor/dunia tidak hilang. */}
+      <div
+        className="flex shrink-0 gap-2 lg:hidden"
+        role="tablist"
+        aria-label="Panel layar kecil"
+      >
+        <PixelButton
+          variant={mobileTab === 'deck' ? 'copper' : 'slate'}
+          onClick={() => setMobileTab('deck')}
+        >
+          Kode &amp; Dunia
+        </PixelButton>
+        <PixelButton
+          variant={mobileTab === 'piko' ? 'copper' : 'slate'}
+          onClick={() => setMobileTab('piko')}
+        >
+          Piko &amp; Catatan
+        </PixelButton>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+        {/* Kolom pendamping: Piko vertikal + panel bertab + fokus + aksi */}
+        <aside
+          className={`${mobileTab === 'piko' ? 'flex' : 'hidden'} min-h-0 w-full shrink-0 flex-col gap-3 lg:flex lg:w-[320px]`}
+        >
           <PikoMascotWidget />
-          <FocusBar />
-          <div className="flex flex-wrap gap-2">
-            <PixelButton variant="moss" onClick={handleHint}>
-              Minta Petunjuk
-            </PixelButton>
-            <PixelButton variant="slate" onClick={() => setCode(quest.initialCode)}>
-              Ulangi Kode Awal
-            </PixelButton>
-          </div>
           {!isBot && engineFailed ? (
             <div
               className="rounded-[4px] px-3 py-2"
@@ -723,46 +759,135 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
               </PixelButton>
             </div>
           ) : null}
-          {lintErrors.length > 0 ? (
+          {/* Panel bertab: Cerita (konteks misi) | Cek Kode (CATATAN PIKO) */}
+          <div
+            className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[4px]"
+            style={{
+              backgroundColor: 'rgba(16,19,26,0.72)',
+              border: '2px solid rgba(216,204,184,0.22)',
+            }}
+          >
             <div
-              className="rounded-[4px] px-3 py-2"
-              style={{
-                backgroundColor: 'rgba(255,77,109,0.1)',
-                border: '2px solid rgba(255,77,109,0.45)',
-              }}
+              className="flex shrink-0 gap-1 border-b-2 px-2 pt-2"
+              style={{ borderColor: 'rgba(216,204,184,0.16)' }}
+              role="tablist"
+              aria-label="Panel pendamping"
             >
-              <p
-                className="mb-1 text-[12px] font-bold uppercase tracking-[0.16em]"
-                style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#ff8fa5' }}
-              >
-                Catatan Piko
-              </p>
-              <ul
-                className="space-y-1 text-[13.5px] leading-snug"
-                style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#f2ead6' }}
-              >
-                {lintErrors.slice(0, 3).map((e, i) => (
-                  <li key={i}>
-                    Baris {e.line}: {e.message}
-                    {e.suggestion ? (
-                      <span style={{ color: '#00f5d4' }}> {e.suggestion}</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
+              {(
+                [
+                  ['cerita', 'Cerita'],
+                  ['kode', 'Cek Kode'],
+                ] as const
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={sideTab === key}
+                  onClick={() => setSideTab(key)}
+                  className="min-h-[36px] rounded-t-[4px] px-3 text-[13px] font-bold uppercase tracking-[0.12em]"
+                  style={{
+                    fontFamily: "'Pixelify Sans', sans-serif",
+                    backgroundColor:
+                      sideTab === key ? 'rgba(244,180,27,0.16)' : 'transparent',
+                    color: sideTab === key ? '#f4b41b' : '#8d99ab',
+                    border: '1.5px solid rgba(216,204,184,0.22)',
+                    borderBottom: 'none',
+                  }}
+                >
+                  {label}
+                  {key === 'kode' && lintErrors.length > 0
+                    ? ` (${lintErrors.length})`
+                    : ''}
+                </button>
+              ))}
             </div>
-          ) : null}
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {sideTab === 'cerita' ? (
+                <div
+                  className="space-y-2 text-[14px] leading-snug"
+                  style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#f2ead6' }}
+                >
+                  <p>{quest.storyContext}</p>
+                  <p>
+                    <b style={{ color: '#f4b41b' }}>Tujuan:</b> {quest.objectiveText}
+                  </p>
+                </div>
+              ) : (
+                <div role="status" aria-live="polite">
+                  {lintItems.length > 0 ? (
+                    <>
+                      <p
+                        className="mb-1 text-[12px] font-bold uppercase tracking-[0.16em]"
+                        style={{
+                          fontFamily: "'Pixelify Sans', sans-serif",
+                          color: '#ff8fa5',
+                        }}
+                      >
+                        Catatan Piko
+                      </p>
+                      <ul
+                        className="space-y-1 text-[13.5px] leading-snug"
+                        style={{
+                          fontFamily: "'Pixelify Sans', sans-serif",
+                          color: '#f2ead6',
+                        }}
+                      >
+                        {lintItems.map((item, i) => (
+                          <li key={i}>
+                            {item.text}
+                            {item.suggestion ? (
+                              <span style={{ color: '#00f5d4' }}> {item.suggestion}</span>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : (
+                    <p
+                      className="text-[13.5px] leading-snug"
+                      style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#8d99ab' }}
+                    >
+                      Belum ada catatan. Kalau kodemu membuat Piko garuk-garuk kepala,
+                      diagnosisnya muncul di sini.
+                    </p>
+                  )}
+                  <p
+                    className="mt-3 border-t pt-2 text-[12.5px] leading-snug"
+                    style={{
+                      fontFamily: "'Pixelify Sans', sans-serif",
+                      color: '#8d99ab',
+                      borderColor: 'rgba(216,204,184,0.16)',
+                    }}
+                  >
+                    Modul di quest ini: {quest.unlockedCartridges.join(', ')}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+          <FocusBar />
+          <div className="flex flex-wrap gap-2">
+            <PixelButton variant="moss" onClick={handleHint}>
+              Minta Petunjuk
+            </PixelButton>
+            <PixelButton variant="slate" onClick={() => setCode(quest.initialCode)}>
+              Ulangi Kode Awal
+            </PixelButton>
+          </div>
         </aside>
 
         {/* Deck */}
-        <div className="min-w-0 flex-1">
+        <div
+          className={`${mobileTab === 'deck' ? 'flex' : 'hidden'} min-h-0 min-w-0 flex-1 flex-col lg:flex`}
+        >
           <CyberDeckFrame
             title="CYBER-DECK"
             lampState={lampState}
             stickers={stickers}
             rightRail={<RunLever questId={quest.id} disabled={running} />}
           >
-            <div className="flex h-[600px] flex-col">
+            <div className="flex h-full min-h-0 flex-col">
               <div
                 className="shrink-0 border-b-2"
                 style={{ borderColor: 'rgba(216,204,184,0.14)', backgroundColor: '#10131a' }}
@@ -774,8 +899,11 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                 />
               </div>
               {isBot && quest.botWorldSetup ? (
-                <div className="flex min-h-0 flex-1">
-                  <div className="w-[38%] min-w-[240px] shrink-0">
+                <div
+                  className="grid min-h-0 flex-1"
+                  style={{ gridTemplateColumns: '1.15fr 0.85fr' }}
+                >
+                  <div className="min-w-0 overflow-hidden">
                     <InteractiveEditor
                       ref={editorRef}
                       value={code}
@@ -787,8 +915,11 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                     />
                   </div>
                   <div
-                    className="min-w-0 flex-1 border-l-2"
-                    style={{ borderColor: 'rgba(216,204,184,0.14)' }}
+                    className="min-w-0 border-l-2"
+                    style={{
+                      borderColor: 'rgba(216,204,184,0.14)',
+                      backgroundColor: '#1a1410',
+                    }}
                   >
                     <BotGridStage
                       setup={quest.botWorldSetup}
@@ -802,7 +933,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                 </div>
               ) : (
                 <div className="flex min-h-0 flex-1 flex-col">
-                  <div className="min-h-[180px] flex-1">
+                  <div className="min-h-0 flex-1">
                     <InteractiveEditor
                       ref={editorRef}
                       value={code}
@@ -814,8 +945,11 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                     />
                   </div>
                   <div
-                    className="h-[248px] shrink-0 border-t-2"
-                    style={{ borderColor: 'rgba(216,204,184,0.14)' }}
+                    className="shrink-0 border-t-2"
+                    style={{
+                      borderColor: 'rgba(216,204,184,0.14)',
+                      height: 'var(--bt-vis-band, 248px)',
+                    }}
                   >
                     <SqlTableVisualizer
                       result={sqlResult}
@@ -830,6 +964,47 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
           </CyberDeckFrame>
         </div>
       </div>
+      {/* Overlay dialog: pembuka = modal ber-backdrop; dialog cerita lain
+          (sukses/funny) = bilah bawah TANPA backdrop agar dunia tetap
+          terlihat (koreksi ui-ux: jangan modal-kan funny-fail). */}
+      {dialogue ? (
+        <div
+          className={
+            dialogueKind === 'intro'
+              ? 'absolute inset-0 z-30 flex items-end justify-center p-4 sm:items-center'
+              : 'pointer-events-none absolute inset-x-0 bottom-0 z-30 flex justify-center p-4'
+          }
+          style={
+            dialogueKind === 'intro' ? { backgroundColor: 'rgba(8,6,4,0.62)' } : undefined
+          }
+        >
+          <div
+            className={`w-full max-w-2xl ${dialogueKind === 'intro' ? '' : 'pointer-events-auto'}`}
+            onClick={() => {
+              // Klik pertama menyelesaikan efek ketik (diurus DialogueBox);
+              // klik berikutnya — setelah baris selesai — lanjut / tutup.
+              if (dialogueLineDone) advanceDialogue();
+            }}
+          >
+            <DialogueBox
+              key={`${quest.id}-dlg-${dialogue.idx}`}
+              name={dialogue.lines[dialogue.idx].speaker}
+              text={dialogue.lines[dialogue.idx].text}
+              onFinished={() => setDialogueLineDone(true)}
+            />
+            <p
+              className="mt-1 h-4 text-right text-[12px] font-semibold uppercase tracking-[0.14em]"
+              style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#d8ccb8' }}
+            >
+              {dialogueLineDone
+                ? dialogue.idx + 1 >= dialogue.lines.length
+                  ? 'Klik dialog untuk menutup'
+                  : 'Klik dialog untuk lanjut'
+                : ''}
+            </p>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

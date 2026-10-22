@@ -9,6 +9,7 @@ export class FriendlyError extends Error {
   readonly line: number;
   readonly column?: number;
   readonly suggestion?: string;
+  readonly code?: string;
 
   constructor(lint: LintError) {
     super(lint.message);
@@ -16,14 +17,32 @@ export class FriendlyError extends Error {
     this.line = lint.line;
     this.column = lint.column;
     this.suggestion = lint.suggestion;
+    this.code = lint.code;
   }
 
   toLintError(): LintError {
     const out: LintError = { line: this.line, message: this.message };
     if (this.column !== undefined) out.column = this.column;
     if (this.suggestion !== undefined) out.suggestion = this.suggestion;
+    if (this.code !== undefined) out.code = this.code;
     return out;
   }
+}
+
+/**
+ * Blanko template (___) yang belum diisi — BUKAN modul yang hilang, jadi
+ * pesannya pendek dan tanpa daftar modul (audit layout F: daftar modul yang
+ * ditempel ke setiap error membuat panel CATATAN PIKO membengkak dan
+ * tercetak berulang untuk tiap baris kosong). UI menggabungkan semua error
+ * berkode 'blank' menjadi satu baris ringkasan.
+ */
+export function blankPlaceholderError(line: number): FriendlyError {
+  return new FriendlyError({
+    line,
+    code: 'blank',
+    message: 'Masih ada bagian kosong (___) di baris ini.',
+    suggestion: 'Klik cartridge di atas editor untuk mengisinya.',
+  });
 }
 
 /** Jarak edit Levenshtein kecil untuk saran "apakah maksudmu ...?". */
