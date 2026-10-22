@@ -216,29 +216,48 @@ interface LintFieldValue {
   markers: RangeSet<GutterMarker>;
 }
 
-function buildLintValue(state: EditorState, errors: LintError[]): LintFieldValue {
+export function buildLintValue(state: EditorState, errors: LintError[]): LintFieldValue {
   const deco = new RangeSetBuilder<Decoration>();
   const markers = new RangeSetBuilder<GutterMarker>();
-  const sorted = [...errors].sort((a, b) => a.line - b.line);
-  for (const err of sorted) {
+  // RangeSetBuilder menuntut add() dalam urutan (from, startSide) menaik.
+  // Versi lama memasang dekorasi per error (garis + tanda), jadi error kedua
+  // di baris yang sama membuat posisi mundur dan CodeMirror melempar
+  // "Ranges must be added sorted..." — crash live 2026-10-22. Sekarang semua
+  // posisi dihitung dulu, diurutkan per (awal baris, kolom), dekorasi garis
+  // dan penanda gutter dipasang SEKALI per baris sebelum tanda-tandanya.
+  interface Placed {
+    lineFrom: number;
+    from: number;
+    to: number;
+    message: string;
+  }
+  const placed: Placed[] = [];
+  for (const err of errors) {
     if (err.line < 1 || err.line > state.doc.lines) continue;
     const line = state.doc.line(err.line);
-    deco.add(line.from, line.from, Decoration.line({ class: 'cm-bt-lint-line' }));
     let from = line.from;
     if (err.column !== undefined && err.column >= 1) {
       from = Math.min(line.to, line.from + err.column - 1);
     } else {
-      const text = line.text;
-      const firstNonSpace = text.search(/\S/);
+      const firstNonSpace = line.text.search(/\S/);
       from = line.from + (firstNonSpace >= 0 ? firstNonSpace : 0);
     }
     let to = from;
     while (to < line.to && /[\w]/.test(state.doc.sliceString(to, to + 1))) to++;
     if (to === from) to = Math.min(line.to, from + 1);
-    if (to > from) {
-      deco.add(from, to, Decoration.mark({ class: 'cm-bt-lint-error' }));
+    placed.push({ lineFrom: line.from, from, to, message: err.message });
+  }
+  placed.sort((a, b) => a.lineFrom - b.lineFrom || a.from - b.from);
+  let lastLineFrom = -1;
+  for (const p of placed) {
+    if (p.lineFrom !== lastLineFrom) {
+      deco.add(p.lineFrom, p.lineFrom, Decoration.line({ class: 'cm-bt-lint-line' }));
+      markers.add(p.lineFrom, p.lineFrom, new LintGutterMarker(p.message));
+      lastLineFrom = p.lineFrom;
     }
-    markers.add(line.from, line.from, new LintGutterMarker(err.message));
+    if (p.to > p.from) {
+      deco.add(p.from, p.to, Decoration.mark({ class: 'cm-bt-lint-error' }));
+    }
   }
   return { deco: deco.finish(), markers: markers.finish() };
 }
