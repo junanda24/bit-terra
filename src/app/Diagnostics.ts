@@ -4,6 +4,7 @@
  * reports honestly — a missing sandbox module or a blocked WASM is a red
  * result with a reason, never a fake green. This module never throws.
  */
+import { SAVE_DB_NAME } from '../core/persistence/saveSystem';
 
 export interface DiagnosticResult {
   name: string;
@@ -71,28 +72,75 @@ async function checkSqlWasm(): Promise<DiagnosticResult> {
 function checkIndexedDb(): Promise<DiagnosticResult> {
   const name = 'Penyimpanan progres (IndexedDB)';
   return new Promise((resolve) => {
+    let settled = false;
+    const done = (r: DiagnosticResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const timer = setTimeout(
+      () =>
+        done({ name, ok: false, detail: 'Pemeriksaan IndexedDB melewati batas waktu (3 detik).' }),
+      3000,
+    );
     try {
       if (typeof indexedDB === 'undefined') {
-        resolve({ name, ok: false, detail: 'IndexedDB tidak tersedia di lingkungan ini.' });
+        done({ name, ok: false, detail: 'IndexedDB tidak tersedia di lingkungan ini.' });
         return;
       }
-      const req = indexedDB.open('bit-terra-diagnostics', 1);
-      req.onerror = () =>
-        resolve({
+      // Probe the REAL save database by name (audit CORE-M4: probing a
+      // throwaway 'bit-terra-diagnostics' DB reported green exactly when
+      // the game's own DB was the broken one). Opened WITHOUT a version:
+      // an existing DB opens as-is; a missing one fires upgradeneeded,
+      // which we abort so the probe never creates an empty shell that
+      // would shadow the schema Dexie builds on first save.
+      let abortedAsNew = false;
+      const req = indexedDB.open(SAVE_DB_NAME);
+      req.onupgradeneeded = () => {
+        abortedAsNew = true;
+        try {
+          req.transaction?.abort();
+        } catch {
+          /* ignore */
+        }
+      };
+      req.onerror = () => {
+        if (abortedAsNew) {
+          done({
+            name,
+            ok: true,
+            detail: `IndexedDB tersedia; database save "${SAVE_DB_NAME}" belum terbentuk (pemain baru) — dibuat saat autosave pertama.`,
+          });
+        } else {
+          done({
+            name,
+            ok: false,
+            detail: `Database save "${SAVE_DB_NAME}" menolak dibuka: ${req.error?.message ?? 'alasan tidak dikenal'}`,
+          });
+        }
+      };
+      req.onblocked = () =>
+        done({
           name,
           ok: false,
-          detail: `IndexedDB menolak dibuka: ${req.error?.message ?? 'alasan tidak dikenal'}`,
+          detail: `Database save "${SAVE_DB_NAME}" sedang dikunci oleh koneksi lain.`,
         });
       req.onsuccess = () => {
+        const version = req.result.version;
         try {
           req.result.close();
         } catch {
           /* ignore */
         }
-        resolve({ name, ok: true, detail: 'IndexedDB bisa dibuka.' });
+        done({
+          name,
+          ok: true,
+          detail: `Database save "${SAVE_DB_NAME}" bisa dibuka (versi ${version}).`,
+        });
       };
     } catch (err) {
-      resolve({
+      done({
         name,
         ok: false,
         detail: `IndexedDB gagal: ${err instanceof Error ? err.message : String(err)}`,

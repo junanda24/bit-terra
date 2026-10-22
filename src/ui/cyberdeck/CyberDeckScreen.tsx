@@ -6,6 +6,11 @@ import { useGameStore } from '../../core/bridge/gameStore';
 import { SoundController } from '../../core/audio/SoundController';
 import { SqliteWasmRunner } from '../../sandbox/sql/SqliteWasmRunner';
 import { SqlAstLinter } from '../../sandbox/sql/SqlAstLinter';
+import {
+  executeGuardedSql,
+  SQL_ROLLBACK_NARRATION,
+} from '../../sandbox/sql/SqlStatementGuard';
+import { classifySqlRuntimeError } from '../../sandbox/sql/SqlRuntimeError';
 import { ResultDiffChecker } from '../../sandbox/sql/ResultDiffChecker';
 import { StepInterpreter } from '../../sandbox/script/StepInterpreter';
 import { ScriptLinter } from '../../sandbox/script/ScriptLinter';
@@ -151,6 +156,10 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   const runnerRef = useRef<SqliteWasmRunner | null>(null);
   const schemaRef = useRef<ReturnType<SqliteWasmRunner['getSchema']>>([]);
   const pendingResultRef = useRef<SqlRunResult | null>(null);
+  // Run SQL terakhir mengandung statement tulis di quest baca-saja
+  // (SQL-H1): efeknya sudah di-rollback; finalizeSql wajib memblokir
+  // penyelesaian dan mengucapkan narasi rollback, bukan verdict biasa.
+  const pendingContaminatedRef = useRef(false);
   const poseRef = useRef<BotPose | null>(null);
   const runTokenRef = useRef(0);
   const hintIdxRef = useRef(0);
@@ -201,6 +210,31 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   }, [quest.id, startDialogue]);
 
   /* ---------------- inisialisasi mesin SQL ---------------- */
+  // Segarkan baris sumber scanner dari keadaan DB SAAT INI (SQL-M2):
+  // tabel yang dipindai ditentukan quest (sqlSourceTable), bukan sekadar
+  // tabel pertama menurut abjad; dipanggil ulang sesudah setiap run
+  // (post-rollback) supaya yang tampil selalu keadaan sebenarnya.
+  const refreshSourceRows = useCallback(
+    (runner: SqliteWasmRunner) => {
+      try {
+        const schema = runner.getSchema();
+        const wanted = quest.sqlSourceTable?.toLowerCase();
+        const entry =
+          (wanted
+            ? schema.find((t) => t.table.toLowerCase() === wanted)
+            : undefined) ?? schema[0];
+        if (!entry) {
+          setSourceRows(null);
+          return;
+        }
+        setSourceRows(runner.runQuery(`SELECT * FROM "${entry.table}"`).rows);
+      } catch {
+        setSourceRows(null);
+      }
+    },
+    [quest.sqlSourceTable],
+  );
+
   // Dipisah dari effect agar tombol "Coba Lagi" bisa menyalakan ulang mesin
   // yang sama. Kegagalan = mode degradasi yang jujur (BLUEPRINT §7): editor
   // tetap bisa dipakai, RUN menjelaskan, tidak pernah layar kosong/hang.
@@ -216,14 +250,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
         if (runnerRef.current !== runner) return;
         schemaRef.current = runner.getSchema();
         setDbReady(true);
-        const first = schemaRef.current[0];
-        if (first) {
-          try {
-            setSourceRows(runner.runQuery(`SELECT * FROM "${first.table}"`).rows);
-          } catch {
-            setSourceRows(null);
-          }
-        }
+        refreshSourceRows(runner);
       })
       .catch((err: unknown) => {
         if (runnerRef.current !== runner) return;
@@ -236,7 +263,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
           'confused',
         );
       });
-  }, [quest, sayPiko]);
+  }, [quest, sayPiko, refreshSourceRows]);
 
   /* ---------------- inisialisasi per quest ---------------- */
   useEffect(() => {
@@ -250,6 +277,7 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     setEngineFailed(false);
     linterWarnedRef.current = false;
     pendingResultRef.current = null;
+    pendingContaminatedRef.current = false;
     poseRef.current = null;
     hintIdxRef.current = 0;
     deductFocusRef.current = false;
@@ -329,9 +357,14 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
   /* ---------------- jalur selesai ---------------- */
   const successPath = useCallback(() => {
     SoundController.playSFX('success');
-    useGameStore.getState().completeQuest(quest.id);
+    // completeQuest reports whether THIS run is the quest's first
+    // completion; the +20 refill is a completion reward, so it is granted
+    // only then — re-running a solved quest must not farm focus (CORE-H1).
+    const firstCompletion = useGameStore.getState().completeQuest(quest.id);
     // Quest tuntas = istirahat yang terbayar: fokus pulih (F-04).
-    useGameStore.getState().adjustFocus(FOCUS_SUCCESS_REWARD);
+    if (firstCompletion) {
+      useGameStore.getState().adjustFocus(FOCUS_SUCCESS_REWARD);
+    }
     sayPiko(`Berhasil! Misi "${quest.title}" tuntas. Kerja bagus, Fixer.`, 'happy');
     // Dialog sukses hasil karya penulis + perubahan dunia yang tadinya
     // data mati — sekarang benar-benar tampil ke pemain (F-03).
@@ -379,9 +412,19 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
     setScanning(false);
     const result = pendingResultRef.current;
     pendingResultRef.current = null;
+    const contaminated = pendingContaminatedRef.current;
+    pendingContaminatedRef.current = false;
     runningRef.current = false;
     setRunning(false);
     if (!result) return;
+    // Run terkontaminasi statement tulis (SQL-H1): penyelesaian DIBLOKIR
+    // apa pun hasil diff-nya — jawaban quest baca-saja harus murni SELECT.
+    // Eksperimen pemain tidak dipajaki fokus; Piko menjelaskan rollback-nya.
+    if (contaminated) {
+      deductFocusRef.current = false;
+      funnyFail('rolled_back', SQL_ROLLBACK_NARRATION);
+      return;
+    }
     const expected = quest.expectedSqlResult;
     if (!expected) {
       successPath();
@@ -424,15 +467,31 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
       return;
     }
     let result: SqlRunResult;
+    let contaminated = false;
     const startedAt = performance.now();
     try {
-      result = runner.runQuery(codeRef.current);
+      // Eksekusi terbungkus penjaga statement (SQL-H1): quest baca-saja
+      // berjalan di atas snapshot; efek tulis terlihat di hasil pindaian,
+      // lalu DB dipulihkan (auto-rollback) sebelum verdict dihitung.
+      const outcome = executeGuardedSql(
+        runner,
+        codeRef.current,
+        quest.sqlWritesAllowed === true,
+      );
+      result = outcome.result;
+      contaminated = outcome.contaminated;
     } catch (err) {
-      // Error mentah tidak pernah ditampilkan ke pemain (BLUEPRINT §5).
+      // Error runtime diklasifikasikan dulu (SQL-M1): narasinya menyebut
+      // kelas masalah yang sebenarnya (fungsi tak dikenal, agregat di
+      // WHERE, ...), bukan "salah sintaks" generik — dan kelas ini tidak
+      // dipajaki fokus, sesuai kebijakan memaafkan F-04/F-09. Error mentah
+      // tidak pernah ditampilkan ke pemain (BLUEPRINT §5).
       console.error('[BitTerra] runQuery gagal:', err);
       runningRef.current = false;
       setRunning(false);
-      funnyFail('syntax_error');
+      refreshSourceRows(runner);
+      deductFocusRef.current = false;
+      funnyFail('syntax_error', classifySqlRuntimeError(err).narration);
       return;
     }
     // runQuery sinkron, jadi tidak ada watchdog async yang jujur untuknya —
@@ -448,11 +507,15 @@ export function CyberDeckScreen({ quest, onClose, musicOn = false, onToggleMusic
         'sql-slow-query',
       );
     }
+    // Scanner menampilkan keadaan DB sesudah run (post-rollback) — jujur
+    // terhadap apa yang benar-benar tersimpan sekarang (SQL-M2).
+    refreshSourceRows(runner);
+    pendingContaminatedRef.current = contaminated;
     setSqlResult(result);
     eventBus.emit('SQL_RESULT', result);
     pendingResultRef.current = result;
     setScanning(true);
-  }, [dbReady, engineFailed, funnyFail, quest.id, sayPiko]);
+  }, [dbReady, engineFailed, funnyFail, quest, refreshSourceRows, sayPiko]);
 
   /* ---------------- eksekusi Bot ---------------- */
   const runBot = useCallback(async () => {

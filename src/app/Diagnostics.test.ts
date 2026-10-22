@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { runDiagnostics } from './Diagnostics';
 
 describe('runDiagnostics (node smoke test)', () => {
@@ -24,5 +24,64 @@ describe('runDiagnostics (node smoke test)', () => {
     );
     expect(browserOnly).toHaveLength(3);
     expect(browserOnly.every((r) => !r.ok)).toBe(true);
+  });
+});
+
+describe('runDiagnostics IndexedDB check probes the REAL save DB (CORE-M4)', () => {
+  interface FakeReq {
+    error: Error | null;
+    result: { version: number; close: () => void };
+    transaction: { abort: () => void };
+    onupgradeneeded: (() => void) | null;
+    onerror: (() => void) | null;
+    onblocked: (() => void) | null;
+    onsuccess: (() => void) | null;
+  }
+
+  function installFakeIdb(behavior: 'error' | 'fresh'): string[] {
+    const opened: string[] = [];
+    const stub = {
+      open: (name: string) => {
+        opened.push(name);
+        const req: FakeReq = {
+          error: new Error('diblokir untuk uji'),
+          result: { version: 1, close: () => {} },
+          transaction: { abort: () => {} },
+          onupgradeneeded: null,
+          onerror: null,
+          onblocked: null,
+          onsuccess: null,
+        };
+        queueMicrotask(() => {
+          if (behavior === 'fresh') req.onupgradeneeded?.();
+          req.onerror?.();
+        });
+        return req;
+      },
+    };
+    (globalThis as Record<string, unknown>)['indexedDB'] = stub;
+    return opened;
+  }
+
+  afterEach(() => {
+    delete (globalThis as Record<string, unknown>)['indexedDB'];
+  });
+
+  it('opens "bit-terra" (not a throwaway diagnostics DB) and reports refusal honestly', async () => {
+    const opened = installFakeIdb('error');
+    const results = await runDiagnostics();
+    const idb = results.find((r) => r.name.includes('IndexedDB'));
+    expect(opened).toEqual(['bit-terra']);
+    expect(idb?.ok).toBe(false);
+    expect(idb?.detail).toContain('bit-terra');
+  });
+
+  it('a not-yet-created save DB (upgrade aborted) is an honest green: pemain baru', async () => {
+    const opened = installFakeIdb('fresh');
+    const results = await runDiagnostics();
+    const idb = results.find((r) => r.name.includes('IndexedDB'));
+    expect(opened).toEqual(['bit-terra']);
+    expect(idb?.ok).toBe(true);
+    expect(idb?.detail).toContain('belum terbentuk');
   });
 });

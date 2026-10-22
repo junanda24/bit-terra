@@ -14,6 +14,19 @@ export interface QuestDefinition {
   initialCode: string;
   sqlSeedScript?: string;
   expectedSqlResult?: Record<string, unknown>[];
+  /**
+   * Quest SQL ini mengizinkan statement tulis (UPDATE/INSERT/DELETE/DDL)
+   * sebagai bagian sah dari solusi (Fase 3 Q8). Default (undefined/false):
+   * quest baca-saja — setiap run dibungkus snapshot + auto-rollback,
+   * dan run yang terkontaminasi statement tulis tidak pernah bisa
+   * menyelesaikan quest (audit SQL-H1).
+   */
+  sqlWritesAllowed?: boolean;
+  /**
+   * Tabel yang ditampilkan scanner sebagai "isi database saat ini"
+   * (audit SQL-M2). Default: tabel pertama dari skema aktif.
+   */
+  sqlSourceTable?: string;
   botWorldSetup?: {
     gridSize: [number, number];
     obstacles: [number, number][];

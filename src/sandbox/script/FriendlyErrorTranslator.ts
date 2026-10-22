@@ -140,6 +140,80 @@ export function unknownFunctionError(name: string, line: number, allowed: Iterab
   });
 }
 
+/**
+ * Kunci terlarang (SCR-H1/H2): membaca kunci ini pada nilai apa pun tidak
+ * menghasilkan error melainkan "tidak ada" (undefined) — kunci dianggap tidak
+ * pernah ada, jadi tidak ada konstruktor/prototipe host yang bocor ke pemain.
+ * MENULIS kunci ini yang ditolak keras dengan error ini.
+ */
+export function blockedKeyError(key: string, line: number): FriendlyError {
+  return new FriendlyError({
+    line,
+    message: `Eh, '${key}' itu jalan pintas ke dalam mesin — Piko tidak bisa membukanya.`,
+    suggestion:
+      'Bagian itu bukan untuk diubah pemain. Pakai variabel dan modul yang tersedia di quest ini saja ya.',
+  });
+}
+
+/**
+ * Data registry hanya-baca (SCR-M2): sensor/gate/dsb. adalah data dunia yang
+ * boleh DIBACA pemain; mengubahnya wajib lewat fungsi bot, bukan penugasan
+ * langsung, supaya setiap perubahan tercatat dan terverifikasi.
+ */
+export function readOnlyError(name: string, line: number): FriendlyError {
+  return new FriendlyError({
+    line,
+    message: `'${name}' hanya bisa dibaca — Piko tidak bisa mengubahnya langsung.`,
+    suggestion:
+      'Kalau mau mengubah keadaan dunia, panggil fungsi botnya ya (misalnya gate.open() untuk membuka pintu air).',
+  });
+}
+
+/**
+ * Anggaran langkah total (SCR-H3): satu Run boleh melakukan paling banyak
+ * sekian langkah (event + panggilan fungsi). Rekursi eksponensial seperti
+ * fib(26) menghasilkan ratusan ribu langkah tanpa satu pun loop, jadi
+ * LoopGuard saja tidak cukup — anggaran inilah yang menghentikannya.
+ */
+export function stepBudgetError(line: number, maxSteps: number): FriendlyError {
+  return new FriendlyError({
+    line,
+    message: `Piko kelelahan — programmu melakukan terlalu banyak langkah (lebih dari ${maxSteps}) dalam sekali jalan.`,
+    suggestion:
+      'Biasanya ini karena loop yang terlalu banyak putaran atau fungsi yang memanggil dirinya terlalu sering. Kurangi putarannya, atau buat kondisi berhenti yang lebih cepat tercapai.',
+  });
+}
+
+/** Konstruksi bahasa yang belum didukung interpreter (SCR-M6, dipakai linter). */
+export function unsupportedConstructError(kind: string, line: number, detail?: string): FriendlyError {
+  const messages: Record<string, string> = {
+    destructuring:
+      'Piko belum bisa membongkar daftar/objek menjadi banyak variabel sekaligus (pola [a, b] atau {x, y}). Tulis satu variabel dalam satu baris ya, misalnya: let a = daftar[0];',
+    class:
+      "Piko belum mengerti 'class'. Di Bit-Terra kita memakai function dan objek biasa dulu ya.",
+    optionalChaining:
+      "Piko belum bisa memakai tanda '?.' (rantai opsional). Cek dulu nilainya dengan if, baru baca isinya ya.",
+    new: "Piko belum bisa memakai 'new'. Objek dibuat langsung dengan kurung kurawal { } ya.",
+    switch:
+      "Piko belum bisa memakai 'switch'. Pakai rangkaian if / else if dulu ya — sama kuatnya!",
+    try: "Piko belum bisa memakai 'try/catch'. Kalau ada yang salah, Piko berhenti dan memberi tahu barisnya kok.",
+    label:
+      'Piko belum bisa memakai label (nama di depan loop). Pakai break atau continue biasa tanpa nama ya.',
+    delete:
+      "Piko belum bisa memakai 'delete'. Data dunia memang hanya bisa dibaca; kalau variabelmu sendiri, timpa saja dengan nilai baru.",
+  };
+  return new FriendlyError({
+    line,
+    message:
+      messages[kind] ??
+      (detail
+        ? `Piko belum mengerti '${detail}' di baris ${line}.`
+        : `Piko belum mengerti perintah di baris ${line}.`),
+    suggestion:
+      'Perintah yang sudah Piko kenal: panggilan fungsi bot, let, if, for, while, dan function.',
+  });
+}
+
 /** LoopGuard: total iterasi loop melewati batas (blueprint: maks 500 ticks). */
 export function loopGuardError(line: number): FriendlyError {
   return new FriendlyError({

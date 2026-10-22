@@ -14,7 +14,10 @@ import type { StepEvent } from '../../shared/types';
 import type { BotApiRegistry } from './BotApiBindings';
 import {
   FriendlyError,
+  blockedKeyError,
   loopGuardError,
+  readOnlyError,
+  stepBudgetError,
   syntaxError,
   translateError,
   typeError,
@@ -26,6 +29,26 @@ import {
 export const MAX_LOOP_ITERATIONS = 500;
 /** Batas kedalaman panggilan fungsi buatan pemain (anti rekursi tak berujung). */
 export const MAX_CALL_DEPTH = 100;
+/**
+ * Anggaran langkah total per Run (SCR-H3): setiap StepEvent yang dihasilkan
+ * dan setiap pemanggilan fungsi buatan pemain dihitung satu langkah.
+ * Kalibrasi: program sah terberat (500 iterasi LoopGuard — total iterasi
+ * semua loop memang dibatasi 500 — dengan beberapa panggilan per iterasi)
+ * menghabiskan ±5.000 langkah, jadi 25.000 memberi ruang 5x. Sebaliknya
+ * fib(24) butuh ±300.000 langkah (150.049 panggilan) dan fib(26) ±800.000 —
+ * keduanya mati dalam hitungan milidetik CPU begitu anggaran habis, bukan
+ * membekukan tab selama berjam-jam animasi.
+ */
+export const MAX_TOTAL_STEPS = 25_000;
+/** Batas panjang string hasil gabungan (anti bom string, audit F6). */
+export const MAX_STRING_LENGTH = 100_000;
+/**
+ * Kunci yang tidak pernah boleh disentuh kode pemain (SCR-H1/H2): lewat
+ * kunci inilah konstruktor & prototipe host bocor (`x.constructor` =
+ * Function, `x.__proto__` = Object.prototype). Membaca kunci ini dianggap
+ * membaca kunci yang tidak ada (undefined); menulisnya ditolak.
+ */
+const BLOCKED_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
 
 // Acorn nodes are loosely typed; we walk them structurally.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -104,11 +127,20 @@ class UserFunction {
   readonly name: string;
   readonly params: FnParam[];
   readonly body: AstNode[];
+  /** Badan ekspresi untuk arrow function `(x) => x * 2` (SCR-M3). */
+  readonly bodyExpr: AstNode | null;
   readonly closure: Scope;
-  constructor(name: string, params: FnParam[], body: AstNode[], closure: Scope) {
+  constructor(
+    name: string,
+    params: FnParam[],
+    body: AstNode[],
+    bodyExpr: AstNode | null,
+    closure: Scope,
+  ) {
     this.name = name;
     this.params = params;
     this.body = body;
+    this.bodyExpr = bodyExpr;
     this.closure = closure;
   }
 }
@@ -121,8 +153,13 @@ function makeUserFunction(node: AstNode, closure: Scope, fallbackName: string): 
     }
     return { name: '_' };
   });
-  const body: AstNode[] = node.body?.type === 'BlockStatement' ? node.body.body : [];
-  return new UserFunction(node.id?.name ?? fallbackName, params, body, closure);
+  // Badan blok { ... } berjalan sebagai daftar statement; badan ekspresi
+  // (khusus arrow function) NILAINYA adalah hasil return implisit (SCR-M3 —
+  // dulu badan ekspresi dibuang diam-diam dan fungsi mengembalikan undefined).
+  const isBlock = node.body?.type === 'BlockStatement';
+  const body: AstNode[] = isBlock ? node.body.body : [];
+  const bodyExpr: AstNode | null = !isBlock && node.body ? node.body : null;
+  return new UserFunction(node.id?.name ?? fallbackName, params, body, bodyExpr, closure);
 }
 
 /* --------------------------------- context -------------------------------- */
@@ -131,11 +168,32 @@ interface RunContext {
   registry: BotApiRegistry;
   loopIterations: number;
   callDepth: number;
+  /** Langkah terpakai sejauh ini (SCR-H3): event + panggilan fungsi. */
+  steps: number;
+  /**
+   * Fungsi yang BOLEH dipanggil kode pemain (SCR-H1): hanya fungsi yang
+   * dicetak sandbox sendiri (wrapper registry) dan metode Math yang aman.
+   * Fungsi host lain yang entah bagaimana terjangkau pemain TIDAK di sini,
+   * sehingga tidak bisa dipanggil lewat jalur ekspresi umum.
+   */
+  callables: WeakSet<object>;
+  /**
+   * Semua objek milik registry (termasuk yang bersarang) — data dunia yang
+   * hanya boleh DIBACA pemain (SCR-M2). WeakSet: identitas referensi, tanpa
+   * menahan objek dari GC.
+   */
+  registryOwned: WeakSet<object>;
 }
 
 function bumpLoopGuard(ctx: RunContext, line: number): void {
   ctx.loopIterations += 1;
   if (ctx.loopIterations > MAX_LOOP_ITERATIONS) throw loopGuardError(line);
+}
+
+/** Hitung satu langkah kerja; meledak ramah bila anggaran total habis. */
+function bumpSteps(ctx: RunContext, line: number): void {
+  ctx.steps += 1;
+  if (ctx.steps > MAX_TOTAL_STEPS) throw stepBudgetError(line, MAX_TOTAL_STEPS);
 }
 
 /* ------------------------------ member access ----------------------------- */
@@ -145,16 +203,48 @@ interface MemberRef {
   set: (value: unknown) => void;
 }
 
+/**
+ * Saring nilai hasil membaca member (SCR-H1/M1): nilai berupa FUNGSI hanya
+ * boleh lewat bila sandbox sendiri yang mencetaknya (wrapper registry /
+ * metode Math — tercatat di ctx.callables) atau fungsi buatan pemain
+ * (UserFunction, typeof-nya 'object'). Fungsi host lain (mis. hasil membaca
+ * `sesuatu.toString`) disamarkan menjadi undefined — tidak bocor ke pemain.
+ */
+function filterReadValue(ctx: RunContext, value: unknown): unknown {
+  if (typeof value === 'function' && !ctx.callables.has(value)) return undefined;
+  return value;
+}
+
+/** Ref "beracun" untuk jalur yang menyentuh kunci terlarang di tengah jalan:
+ * bacaan menganggapnya tidak ada; tulisan ditolak keras. Yang terpenting:
+ * interpreter TIDAK PERNAH melangkah masuk ke Object.prototype. */
+function blockedRef(key: string, line: number): MemberRef {
+  return {
+    get: () => undefined,
+    set: () => {
+      throw blockedKeyError(key, line);
+    },
+  };
+}
+
 async function* memberRef(
   node: AstNode,
   scope: Scope,
   ctx: RunContext,
 ): AsyncGenerator<StepEvent, MemberRef, undefined> {
+  const line = lineOf(node);
   const path = staticPath(node);
   if (path) {
     const parts = path.split('.');
     const root = parts[0];
-    if (root in ctx.registry.objects) {
+    // Jalur cepat objek registry — HANYA bila root tidak ditimpa variabel
+    // pemain (SCR-M4: deklarasi pemain menang atas registry).
+    if (root in ctx.registry.objects && !scope.has(root)) {
+      // Kunci terlarang di mana pun dalam jalur → racun (SCR-H1/H2):
+      // jangan pernah melangkah ke prototipe/konstruktor host.
+      for (const part of parts.slice(1)) {
+        if (BLOCKED_KEYS.has(part)) return blockedRef(part, line);
+      }
       const key = parts[parts.length - 1];
       let parent: Record<string, unknown> = ctx.registry.objects[root];
       for (const part of parts.slice(1, -1)) {
@@ -162,15 +252,17 @@ async function* memberRef(
         if (next === null || typeof next !== 'object') {
           throw typeError(
             `Piko tidak bisa membaca '${path}' — jalurnya terputus di tengah.`,
-            lineOf(node),
+            line,
           );
         }
         parent = next as Record<string, unknown>;
       }
       return {
-        get: () => parent[key],
-        set: (v: unknown) => {
-          parent[key] = v;
+        get: () => filterReadValue(ctx, parent[key]),
+        // Data registry hanya-baca (SCR-M2): mengubah dunia wajib lewat
+        // fungsi bot supaya tercatat & terverifikasi.
+        set: () => {
+          throw readOnlyError(path, line);
         },
       };
     }
@@ -180,15 +272,23 @@ async function* memberRef(
   const key = String(keyRaw);
   if (obj === null || obj === undefined || (typeof obj !== 'object' && typeof obj !== 'function')) {
     throw typeError(
-      `Di baris ${lineOf(node)}, Piko mencoba membaca isi dari nilai yang kosong.`,
-      lineOf(node),
+      `Di baris ${line}, Piko mencoba membaca isi dari nilai yang kosong.`,
+      line,
       'Pastikan variabelnya sudah diisi nilai sebelum isinya dibaca ya.',
     );
   }
+  // Kunci terlarang pada nilai apa pun (SCR-H1/H2): bacaan = tidak ada,
+  // tulisan = ditolak. Pemeriksaan ini SEBELUM target disentuh lebih jauh.
+  if (BLOCKED_KEYS.has(key)) return blockedRef(key, line);
   const target = obj as Record<string, unknown>;
   return {
-    get: () => target[key],
+    get: () => filterReadValue(ctx, target[key]),
     set: (v: unknown) => {
+      // Objek milik registry tetap hanya-baca walau dicapai lewat alias
+      // atau kunci terhitung (SCR-M2, kasus S10).
+      if (ctx.registryOwned.has(target)) {
+        throw readOnlyError(path ?? 'data sensor', line);
+      }
       target[key] = v;
     },
   };
@@ -217,9 +317,11 @@ async function* evalExpr(
 
     case 'MemberExpression': {
       const path = staticPath(node);
-      if (path && path in ctx.registry.api) {
-        const fn = ctx.registry.api[path];
-        return (...args: unknown[]) => fn(...args);
+      // Fungsi registry dikembalikan sebagai referensi aslinya (bukan
+      // pembungkus baru) supaya identitasnya tercatat di ctx.callables.
+      // Root yang ditimpa variabel pemain menang (SCR-M4) — lewati jalur ini.
+      if (path && path in ctx.registry.api && !scope.has(path.split('.')[0])) {
+        return ctx.registry.api[path];
       }
       const ref = yield* memberRef(node, scope, ctx);
       return ref.get();
@@ -307,6 +409,7 @@ async function* evalExpr(
           const v = yield* evalExpr(node.expressions[i], scope, ctx);
           out += String(v);
         }
+        if (out.length > MAX_STRING_LENGTH) throw loopGuardError(line);
       }
       return out;
     }
@@ -326,7 +429,19 @@ async function* evalExpr(
         const key = prop.computed
           ? String(yield* evalExpr(prop.key, scope, ctx))
           : String(prop.key.name ?? prop.key.value);
-        obj[key] = yield* evalExpr(prop.value, scope, ctx);
+        const value = yield* evalExpr(prop.value, scope, ctx);
+        if (key === '__proto__') {
+          // Penugasan biasa akan mengganti PROTOTIPE objek, bukan membuat
+          // properti — paksa jadi properti data biasa (SCR-H2).
+          Object.defineProperty(obj, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true,
+          });
+        } else {
+          obj[key] = value;
+        }
       }
       return obj;
     }
@@ -355,8 +470,16 @@ async function* evalExpr(
 
 function applyBinary(op: string, l: unknown, r: unknown, line: number): unknown {
   switch (op) {
-    case '+':
-      return (l as never) + (r as never);
+    case '+': {
+      const out: unknown = (l as never) + (r as never);
+      // Bom string (audit F6): `s = s + s` dalam loop pendek menggandakan
+      // string sampai batas mesin JS. Penjaga sandbox menghentikannya jauh
+      // lebih awal dengan pesan LoopGuard yang bisa dipahami pemain.
+      if (typeof out === 'string' && out.length > MAX_STRING_LENGTH) {
+        throw loopGuardError(line);
+      }
+      return out;
+    }
     case '-':
       return (l as number) - (r as number);
     case '*':
@@ -466,8 +589,53 @@ async function* evalCall(
     return args;
   };
 
-  // 1) Panggilan bertitik: piko.moveForward(3), gate.open(), ...
+  /**
+   * Panggil nilai fungsi yang sudah ter-resolve dari ekspresi. Hanya tiga
+   * jenis yang boleh jalan (SCR-H1): fungsi buatan pemain (UserFunction),
+   * fungsi cetakan sandbox (ctx.callables — wrapper registry & Math), dan
+   * TIDAK ADA yang lain. Fungsi registry yang dicapai lewat alias tetap
+   * menghasilkan StepEvent 'call' dengan nama aksinya, supaya highlight &
+   * animasi UI tidak hilang.
+   */
+  const invokeResolved = async function* (
+    fnVal: unknown,
+  ): AsyncGenerator<StepEvent, unknown, undefined> {
+    if (fnVal instanceof UserFunction) {
+      const args = yield* evalArgs();
+      return yield* callUserFunction(fnVal, args, ctx, line);
+    }
+    if (typeof fnVal === 'function') {
+      if (ctx.callables.has(fnVal)) {
+        const args = yield* evalArgs();
+        const action = Object.keys(ctx.registry.api).find(
+          (k) => ctx.registry.api[k] === fnVal,
+        );
+        if (action) yield { line, kind: 'call', action, args };
+        return (fnVal as (...a: unknown[]) => unknown)(...args);
+      }
+      throw typeError(
+        `Yang dipanggil di baris ${line} bukan fungsi buatanmu dan bukan modul Piko — jalan pintas seperti itu ditutup demi keamanan desa.`,
+        line,
+      );
+    }
+    throw typeError(
+      `Yang dipanggil di baris ${line} bukan fungsi.`,
+      line,
+      'Hanya fungsi bot (misalnya piko.moveForward) dan fungsi buatanmu sendiri yang bisa dipanggil.',
+    );
+  };
+
   const path = staticPath(callee);
+
+  // 0) Root bertitik yang ditimpa deklarasi pemain MENANG atas registry
+  // (SCR-M4): `let piko = {...}; piko.boot();` memanggil objek pemain,
+  // bukan diam-diam menggerakkan bot asli.
+  if (path && scope.has(path.split('.')[0])) {
+    const fnVal = yield* evalExpr(callee, scope, ctx);
+    return yield* invokeResolved(fnVal);
+  }
+
+  // 1) Panggilan bertitik: piko.moveForward(3), gate.open(), ...
   if (path && path in ctx.registry.api) {
     if (!ctx.registry.allowed.has(path)) {
       throw unknownFunctionError(path, line, ctx.registry.allowed);
@@ -478,11 +646,12 @@ async function* evalCall(
     return ctx.registry.api[path](...args);
   }
 
-  // 2) Math.* — aman, murni hitungan.
+  // 2) Math.* — aman, murni hitungan (termasuk anggaran langkah, SCR-H3).
   if (path && path.startsWith('Math.')) {
     const fnName = path.slice('Math.'.length);
     const fn = (Math as unknown as Record<string, unknown>)[fnName];
-    if (typeof fn === 'function') {
+    if (typeof fn === 'function' && ctx.callables.has(fn)) {
+      bumpSteps(ctx, line);
       const args = yield* evalArgs();
       return (fn as (...a: unknown[]) => unknown)(...args);
     }
@@ -494,9 +663,11 @@ async function* evalCall(
     const name = callee.name as string;
     if (scope.has(name)) {
       const val = scope.lookup(name, line);
-      if (val instanceof UserFunction) {
-        const args = yield* evalArgs();
-        return yield* callUserFunction(val, args, ctx, line);
+      if (
+        val instanceof UserFunction ||
+        (typeof val === 'function' && ctx.callables.has(val))
+      ) {
+        return yield* invokeResolved(val);
       }
       throw typeError(
         `'${name}' di baris ${line} bukan fungsi, jadi tidak bisa dipanggil dengan ().`,
@@ -517,19 +688,7 @@ async function* evalCall(
 
   // 4) Callee ekspresi umum (metode pada nilai lokal, fungsi hasil ekspresi).
   const fnVal = yield* evalExpr(callee, scope, ctx);
-  if (fnVal instanceof UserFunction) {
-    const args = yield* evalArgs();
-    return yield* callUserFunction(fnVal, args, ctx, line);
-  }
-  if (typeof fnVal === 'function') {
-    const args = yield* evalArgs();
-    return (fnVal as (...a: unknown[]) => unknown)(...args);
-  }
-  throw typeError(
-    `Yang dipanggil di baris ${line} bukan fungsi.`,
-    line,
-    'Hanya fungsi bot (misalnya piko.moveForward) dan fungsi buatanmu sendiri yang bisa dipanggil.',
-  );
+  return yield* invokeResolved(fnVal);
 }
 
 async function* callUserFunction(
@@ -545,6 +704,10 @@ async function* callUserFunction(
       'Kalau fungsimu memanggil dirinya sendiri, pastikan ada kondisi berhenti ya.',
     );
   }
+  // Setiap panggilan menghabiskan anggaran langkah (SCR-H3) — inilah yang
+  // menghentikan rekursi eksponensial dangkal seperti fib(26), yang tidak
+  // pernah menyentuh batas iterasi loop maupun batas kedalaman.
+  bumpSteps(ctx, line);
   ctx.callDepth += 1;
   try {
     const scope = new Scope(fn.closure);
@@ -556,6 +719,8 @@ async function* callUserFunction(
       }
       scope.declare(p.name, value);
     }
+    // Badan ekspresi arrow function: nilainya adalah hasil return (SCR-M3).
+    if (fn.bodyExpr) return yield* evalExpr(fn.bodyExpr, scope, ctx);
     try {
       yield* execStatements(fn.body, scope, ctx);
     } catch (err) {
@@ -786,13 +951,55 @@ export async function* runBotScript(
     throw syntaxError(err);
   }
 
-  const ctx: RunContext = { registry: botApi, loopIterations: 0, callDepth: 0 };
+  // Daftar fungsi yang boleh dipanggil pemain (SCR-H1): fungsi registry
+  // persis seperti yang dipegang registry + metode Math yang aman. Fungsi
+  // host lain tidak masuk daftar, jadi tidak bisa dipanggil pemain.
+  const callables = new WeakSet<object>();
+  for (const key of Object.keys(botApi.api)) callables.add(botApi.api[key]);
+  for (const key of Object.getOwnPropertyNames(Math)) {
+    const value = (Math as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'function') callables.add(value);
+  }
+  // Semua objek milik registry (termasuk yang bersarang) ditandai hanya-baca
+  // (SCR-M2). Penelusuran rekursif dengan perlindungan siklus via WeakSet.
+  const registryOwned = new WeakSet<object>();
+  const markOwned = (value: unknown): void => {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return;
+    if (registryOwned.has(value)) return;
+    registryOwned.add(value);
+    if (typeof value === 'object') {
+      for (const child of Object.values(value as Record<string, unknown>)) markOwned(child);
+    }
+  };
+  for (const key of Object.keys(botApi.objects)) markOwned(botApi.objects[key]);
+
+  const ctx: RunContext = {
+    registry: botApi,
+    loopIterations: 0,
+    callDepth: 0,
+    steps: 0,
+    callables,
+    registryOwned,
+  };
   const globalScope = new Scope(null);
   const body: AstNode[] = Array.isArray(program?.body) ? program.body : [];
   const lastLine = body.length > 0 ? lineOf(body[body.length - 1]) : 1;
 
   try {
-    yield* execStatements(body, globalScope, ctx);
+    // Pompa manual (bukan yield*): setiap StepEvent yang keluar dihitung ke
+    // anggaran langkah total (SCR-H3); generator dalam ditutup rapi bila
+    // konsumen berhenti di tengah jalan.
+    const inner = execStatements(body, globalScope, ctx);
+    try {
+      let step = await inner.next();
+      while (!step.done) {
+        bumpSteps(ctx, step.value.line);
+        yield step.value;
+        step = await inner.next();
+      }
+    } finally {
+      await inner.return(undefined);
+    }
   } catch (err) {
     if (err instanceof FriendlyError) throw err;
     if (err instanceof ReturnSignal) {
@@ -820,4 +1027,5 @@ export const StepInterpreter = {
   run: runBotScript,
   MAX_LOOP_ITERATIONS,
   MAX_CALL_DEPTH,
+  MAX_TOTAL_STEPS,
 };

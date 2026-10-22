@@ -8,6 +8,7 @@ import { selectPersistedProgress, useGameStore } from './core/bridge/gameStore';
 import {
   exportSave,
   importSave,
+  installFlushOnHide,
   load as loadSave,
   save as saveProgress,
 } from './core/persistence/saveSystem';
@@ -31,7 +32,12 @@ async function loadQuestIndex(): Promise<QuestDefinition[]> {
       default?: QuestDefinition[];
     };
     return mod.ALL_QUESTS ?? mod.quests ?? mod.QUESTS ?? mod.default ?? [];
-  } catch {
+  } catch (err) {
+    // A failed quest chunk must leave a trace like every other failure
+    // path in the app (audit CORE-L6) — the placeholder UI alone would
+    // otherwise look identical to "content not built yet".
+    console.error('[Bit-Terra] Memuat daftar quest gagal:', err);
+    logError(err, 'quest-load');
     return [];
   }
 }
@@ -88,6 +94,10 @@ function AppShell() {
       cancelled = true;
     };
   }, []);
+
+  // Flush the pending autosave when the page is hidden or closed, so the
+  // debounce window cannot eat the last seconds of progress (CORE-M2).
+  useEffect(() => installFlushOnHide(), []);
 
   // Autosave (debounced) whenever persisted progress changes; the adaptive
   // music mix follows coding mode.

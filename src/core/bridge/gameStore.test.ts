@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eventBus } from './eventBus';
-import { useGameStore } from './gameStore';
+import { clampFocus, useGameStore, type PersistedProgress } from './gameStore';
 
 const initial = {
   currentQuestId: null,
@@ -97,5 +97,81 @@ describe('gameStore', () => {
     expect(s.codeByQuest).toEqual({ q1: 'x' });
     expect(s.focus).toBe(42);
     expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('gameStore — TAHAP A3 audit fixes (CORE-H1/M3/L1)', () => {
+  it('CORE-L1: clampFocus maps NaN to 0 (never full focus); infinities clamp to bounds', () => {
+    expect(clampFocus(Number.NaN)).toBe(0);
+    expect(clampFocus(Number.POSITIVE_INFINITY)).toBe(100);
+    expect(clampFocus(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(clampFocus(42.4)).toBe(42);
+  });
+
+  it('CORE-L1: setFocus/adjustFocus IGNORE non-finite input — focus and events unchanged', () => {
+    const handler = vi.fn();
+    eventBus.on('FOCUS_CHANGED', handler);
+    useGameStore.getState().setFocus(40);
+    expect(handler).toHaveBeenCalledTimes(1);
+    useGameStore.getState().setFocus(Number.NaN);
+    useGameStore.getState().setFocus(Number.POSITIVE_INFINITY);
+    useGameStore.getState().adjustFocus(Number.NaN);
+    expect(useGameStore.getState().focus).toBe(40);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('CORE-H1: completeQuest returns true only for the first completion', () => {
+    expect(useGameStore.getState().completeQuest('q1')).toBe(true);
+    expect(useGameStore.getState().completeQuest('q1')).toBe(false);
+    expect(useGameStore.getState().completeQuest('q2')).toBe(true);
+  });
+
+  it('CORE-H1: the successPath reward pattern pays +20 ONCE across two successful runs', () => {
+    // CyberDeckScreen.successPath is exactly:
+    //   const first = completeQuest(id); if (first) adjustFocus(+20);
+    // The dedupe decision lives in the store's return value (single source
+    // of truth), so two runs of that pattern cannot pay twice.
+    useGameStore.getState().setFocus(30);
+    const successPathPattern = () => {
+      const first = useGameStore.getState().completeQuest('q1');
+      if (first) useGameStore.getState().adjustFocus(20);
+    };
+    successPathPattern();
+    successPathPattern(); // replay of the already-solved quest
+    expect(useGameStore.getState().focus).toBe(50);
+  });
+
+  it('CORE-M3: hydrate never throws on hostile shapes — fields degrade to defaults', () => {
+    const hostile = (p: unknown) => p as PersistedProgress;
+    expect(() =>
+      useGameStore.getState().hydrate(hostile({ completedQuests: null, codeByQuest: {}, focus: 50 })),
+    ).not.toThrow();
+    expect(useGameStore.getState().completedQuests).toEqual([]);
+
+    useGameStore.getState().hydrate(hostile({ completedQuests: 'abc', codeByQuest: {}, focus: 50 }));
+    expect(useGameStore.getState().completedQuests).toEqual([]); // NOT ['a','b','c']
+
+    useGameStore.getState().hydrate(hostile({ completedQuests: [], codeByQuest: null, focus: 50 }));
+    expect(useGameStore.getState().codeByQuest).toEqual({});
+
+    useGameStore.getState().hydrate(hostile(null));
+    expect(useGameStore.getState()).toMatchObject({ completedQuests: [], codeByQuest: {}, focus: 100 });
+  });
+
+  it('CORE-M3: hydrate filters junk entries per-field and defaults garbage focus', () => {
+    useGameStore.getState().hydrate({
+      completedQuests: ['q1', 42, 'q2'] as unknown as string[],
+      codeByQuest: { q1: 'SELECT 1', q2: 7 } as unknown as Record<string, string>,
+      focus: 'x' as unknown as number,
+    });
+    const s = useGameStore.getState();
+    expect(s.completedQuests).toEqual(['q1', 'q2']);
+    expect(s.codeByQuest).toEqual({ q1: 'SELECT 1' });
+    expect(s.focus).toBe(100);
+
+    useGameStore.getState().hydrate({ completedQuests: [], codeByQuest: {}, focus: Number.NaN });
+    expect(useGameStore.getState().focus).toBe(100);
+    useGameStore.getState().hydrate({ completedQuests: [], codeByQuest: {}, focus: -5 });
+    expect(useGameStore.getState().focus).toBe(0);
   });
 });

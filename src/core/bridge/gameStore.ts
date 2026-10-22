@@ -1,6 +1,15 @@
 import { create } from 'zustand';
 import type { PikoMood } from '../../shared/types';
 import { eventBus } from './eventBus';
+import {
+  clampFocus,
+  FOCUS_MAX,
+  sanitizePersistedProgress,
+} from '../persistence/sanitize';
+
+// Focus clamp + bounds live in core/persistence/sanitize (shared with the
+// save system); re-exported here so existing imports keep working.
+export { clampFocus, FOCUS_MAX, FOCUS_MIN } from '../persistence/sanitize';
 
 export type EditorMode = 'SQL' | 'BOT_SCRIPT';
 
@@ -16,14 +25,6 @@ export interface PersistedProgress {
   focus: number;
 }
 
-export const FOCUS_MIN = 0;
-export const FOCUS_MAX = 100;
-
-export function clampFocus(value: number): number {
-  if (!Number.isFinite(value)) return FOCUS_MAX;
-  return Math.min(FOCUS_MAX, Math.max(FOCUS_MIN, Math.round(value)));
-}
-
 interface GameStore extends PersistedProgress {
   currentQuestId: string | null;
   editorMode: EditorMode;
@@ -37,7 +38,10 @@ interface GameStore extends PersistedProgress {
   setFocus: (focus: number) => void;
   adjustFocus: (delta: number) => void;
   setCodingMode: (on: boolean) => void;
-  completeQuest: (questId: string) => void;
+  /** Records completion; returns true ONLY for the first completion of a
+   * quest (the event fires exactly then too) — one-time rewards key off
+   * this return value (audit CORE-H1). */
+  completeQuest: (questId: string) => boolean;
   sayPiko: (text: string, mood: PikoMood) => void;
   clearPiko: () => void;
   /** Apply a loaded save payload silently (no bus events — it is a restore, not gameplay). */
@@ -66,6 +70,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set((s) => ({ codeByQuest: { ...s.codeByQuest, [questId]: code } })),
 
   setFocus: (focus) => {
+    // A non-finite input (NaN/±Infinity from a buggy caller) is IGNORED —
+    // it must never move focus, least of all to full (audit CORE-L1).
+    if (!Number.isFinite(focus)) return;
     const next = clampFocus(focus);
     if (next === get().focus) return;
     set({ focus: next });
@@ -82,9 +89,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   completeQuest: (questId) => {
-    if (get().completedQuests.includes(questId)) return;
+    if (get().completedQuests.includes(questId)) return false;
     set((s) => ({ completedQuests: [...s.completedQuests, questId] }));
     eventBus.emit('QUEST_COMPLETED', { questId });
+    return true;
   },
 
   sayPiko: (text, mood) => {
@@ -94,12 +102,17 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   clearPiko: () => set({ pikoLine: null }),
 
-  hydrate: (payload) =>
+  hydrate: (payload) => {
+    // Trust boundary (audit CORE-M3): hydrate sanitizes its input itself
+    // instead of trusting every caller to pre-validate — hostile shapes
+    // degrade per-field to defaults and never throw into the store.
+    const clean = sanitizePersistedProgress(payload);
     set({
-      completedQuests: [...payload.completedQuests],
-      codeByQuest: { ...payload.codeByQuest },
-      focus: clampFocus(payload.focus),
-    }),
+      completedQuests: clean.completedQuests,
+      codeByQuest: clean.codeByQuest,
+      focus: clean.focus,
+    });
+  },
 
   resetProgress: () =>
     set({ completedQuests: [], codeByQuest: {}, focus: FOCUS_MAX, pikoLine: null }),

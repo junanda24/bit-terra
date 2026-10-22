@@ -57,11 +57,13 @@ function quoteIdent(name: string): string {
 
 export class SqliteWasmRunner {
   private db: Database | null = null;
+  private sqlStatic: SqlJsStatic | null = null;
 
   /** Buat database in-memory BARU lalu jalankan seed script di atasnya. */
   async init(seedScript: string): Promise<void> {
     this.dispose();
     const SQL = await loadSqlJs();
+    this.sqlStatic = SQL;
     this.db = new SQL.Database();
     if (seedScript.trim().length > 0) {
       // Error seed = error SQLite mentah, diteruskan apa adanya.
@@ -110,6 +112,28 @@ export class SqliteWasmRunner {
         pragma.length === 0 ? [] : pragma[0].values.map((r) => String(r[1]));
       return { table, columns };
     });
+  }
+
+  /**
+   * Snapshot seluruh database sebagai byte array (sql.js export).
+   * Dipakai lapisan penjaga statement untuk auto-rollback (audit SQL-H1):
+   * snapshot diambil sebelum run, dipulihkan sesudahnya, sehingga
+   * eksperimen tulis pemain tidak pernah mengubah database sesi.
+   */
+  exportSnapshot(): Uint8Array {
+    return this.requireDb().export();
+  }
+
+  /** Ganti database aktif dengan isi snapshot dari exportSnapshot(). */
+  restoreSnapshot(snapshot: Uint8Array): void {
+    const SQL = this.sqlStatic;
+    if (!SQL || !this.db) {
+      throw new Error(
+        'Database belum siap. Panggil init() dulu sebelum memulihkan snapshot.',
+      );
+    }
+    this.db.close();
+    this.db = new SQL.Database(snapshot);
   }
 
   dispose(): void {

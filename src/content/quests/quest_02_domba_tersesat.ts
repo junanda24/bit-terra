@@ -64,6 +64,9 @@ INSERT INTO livestock_logs (id, sheep_name, last_zone, status) VALUES (12, 'Kuci
     { sheep_name: 'Bolang', last_zone: 'Dekat Bendungan' },
     { sheep_name: 'Brintik', last_zone: 'Kebun Bibi Flora' },
   ],
+  // Scanner menampilkan tabel ini sebagai isi database desa (SQL-M2) —
+  // bukan sekadar tabel pertama menurut abjad.
+  sqlSourceTable: 'livestock_logs',
   hints: [
     'Pak Rani menunjuk layar Cyber-Deck dengan ujung tongkatnya: "Semua catatan kalung domba ada di tabel livestock_logs. Mulailah dengan SELECT untuk memilih data yang mau dilihat, lalu FROM untuk menyebut nama tabelnya."',
     'Pak Tua Query yang kebetulan lewat ikut menimpali sambil mengelus janggut: "Kita hanya mencari yang hilang, Nak. Saring barisnya dengan WHERE status = \'LOST\' — dan ingat, kata LOST ditulis di dalam tanda kutip."',

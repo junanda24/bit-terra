@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
-import { clampFocus, type PersistedProgress } from '../bridge/gameStore';
+import type { PersistedProgress } from '../bridge/gameStore';
+import { isRecord, sanitizePayloadStrict } from './sanitize';
 
 /**
  * Save system — Dexie (IndexedDB) + versioned envelope + `.bitterra`
@@ -20,6 +21,8 @@ export interface SaveEnvelope {
 
 export const SAVE_VERSION = 1 as const;
 export const SAVE_ROW_ID = 'autosave';
+/** The one IndexedDB database the game persists to (diagnostics probes THIS name — audit CORE-M4). */
+export const SAVE_DB_NAME = 'bit-terra';
 const QUARANTINE_PREFIX = 'bitterra:quarantine:';
 const SAVE_DEBOUNCE_MS = 800;
 
@@ -27,30 +30,9 @@ const SAVE_DEBOUNCE_MS = 800;
 /* Pure envelope helpers (unit-tested)                                 */
 /* ------------------------------------------------------------------ */
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function sanitizePayload(raw: unknown): SavePayload | null {
-  if (!isRecord(raw)) return null;
-  const { completedQuests, codeByQuest, focus } = raw;
-  if (!Array.isArray(completedQuests) || !completedQuests.every((q) => typeof q === 'string')) {
-    return null;
-  }
-  if (!isRecord(codeByQuest) || !Object.values(codeByQuest).every((c) => typeof c === 'string')) {
-    return null;
-  }
-  if (typeof focus !== 'number' || !Number.isFinite(focus)) return null;
-  return {
-    completedQuests: [...(completedQuests as string[])],
-    codeByQuest: { ...(codeByQuest as Record<string, string>) },
-    focus: clampFocus(focus),
-  };
-}
-
 /** Build a fresh, sanitized envelope around a payload. */
 export function buildEnvelope(payload: SavePayload): SaveEnvelope {
-  const clean = sanitizePayload(payload) ?? { completedQuests: [], codeByQuest: {}, focus: 100 };
+  const clean = sanitizePayloadStrict(payload) ?? { completedQuests: [], codeByQuest: {}, focus: 100 };
   return { version: SAVE_VERSION, savedAt: new Date().toISOString(), payload: clean };
 }
 
@@ -67,7 +49,7 @@ export function inspectEnvelope(raw: unknown): InspectResult {
     return { ok: false, reason: typeof raw.version === 'number' ? 'version' : 'corrupt' };
   }
   if (typeof raw.savedAt !== 'string') return { ok: false, reason: 'corrupt' };
-  const payload = sanitizePayload(raw.payload);
+  const payload = sanitizePayloadStrict(raw.payload);
   if (!payload) return { ok: false, reason: 'corrupt' };
   return { ok: true, envelope: { version: SAVE_VERSION, savedAt: raw.savedAt, payload } };
 }
@@ -150,7 +132,7 @@ class BitTerraDb extends Dexie {
   saves!: Table<SaveRow, string>;
 
   constructor() {
-    super('bit-terra');
+    super(SAVE_DB_NAME);
     this.version(1).stores({ saves: 'id' });
   }
 }
@@ -200,6 +182,51 @@ export async function flushSave(): Promise<boolean> {
   pendingPayload = null;
   if (!p) return true;
   return saveNow(p);
+}
+
+interface FlushEventTarget {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+
+/**
+ * Flush the pending autosave when the page goes away (audit CORE-M2: the
+ * 800 ms debounce window used to silently eat the last edits when a player
+ * closed the tab or switched apps). Listens to `pagehide` +
+ * `beforeunload` on the window and `visibilitychange`→hidden on the
+ * document. Returns an uninstaller. Targets are injectable for tests.
+ */
+export function installFlushOnHide(targets?: {
+  win?: FlushEventTarget | null;
+  doc?: (FlushEventTarget & { visibilityState?: string }) | null;
+}): () => void {
+  const win =
+    targets?.win !== undefined
+      ? targets.win
+      : typeof window !== 'undefined'
+        ? (window as FlushEventTarget)
+        : null;
+  const doc =
+    targets?.doc !== undefined
+      ? targets.doc
+      : typeof document !== 'undefined'
+        ? (document as FlushEventTarget & { visibilityState?: string })
+        : null;
+  if (!win && !doc) return () => {};
+  const flush = () => {
+    void flushSave();
+  };
+  const onVisibility = () => {
+    if (!doc || doc.visibilityState === 'hidden') flush();
+  };
+  win?.addEventListener('pagehide', flush);
+  win?.addEventListener('beforeunload', flush);
+  doc?.addEventListener('visibilitychange', onVisibility);
+  return () => {
+    win?.removeEventListener('pagehide', flush);
+    win?.removeEventListener('beforeunload', flush);
+    doc?.removeEventListener('visibilitychange', onVisibility);
+  };
 }
 
 /**

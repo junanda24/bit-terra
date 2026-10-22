@@ -25,7 +25,8 @@ function CellValue({ value }: { value: unknown }) {
 }
 
 export interface SqlTableVisualizerProps {
-  /** Hasil query terakhir (dari SqliteWasmRunner via SQL_RESULT). */
+  /** Hasil query terakhir, diteruskan sebagai prop oleh CyberDeckScreen
+   * (layar deck yang menjalankan SqliteWasmRunner dan memegang hasilnya). */
   result: SqlRunResult | null;
   /**
    * Seluruh baris tabel sumber, bila tersedia. Saat `scanning` aktif, baris

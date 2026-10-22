@@ -80,4 +80,109 @@ describe('SqlAstLinter', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].line).toBe(2);
   });
+
+  /* -------- SQL-H2: false positive yang dulu memblokir SQL sah -------- */
+
+  it('C3: alias output boleh dirujuk di ORDER BY', () => {
+    expect(
+      lint(
+        "SELECT sheep_name AS nama, last_zone FROM livestock_logs WHERE status = 'LOST' ORDER BY nama",
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('alias output boleh dirujuk di GROUP BY dan HAVING', () => {
+    expect(
+      lint(
+        'SELECT status AS s, COUNT(*) AS c FROM livestock_logs GROUP BY s HAVING c > 1 ORDER BY c',
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('alias output di WHERE tetap ditolak (SQLite memang melarangnya)', () => {
+    const errors = lint(
+      "SELECT sheep_name AS nama FROM livestock_logs WHERE nama = 'Kriting'",
+      SCHEMA,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('"nama" tidak ditemukan');
+  });
+
+  it('nama tak dikenal di ORDER BY tanpa alias tetap ditolak', () => {
+    const errors = lint(
+      'SELECT sheep_name FROM livestock_logs ORDER BY nama_lain',
+      SCHEMA,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('"nama_lain" tidak ditemukan');
+  });
+
+  it('C10: nama CTE dikenal sebagai tabel, kolomnya dari proyeksi CTE', () => {
+    expect(
+      lint(
+        "WITH lost AS (SELECT sheep_name, last_zone FROM livestock_logs WHERE status = 'LOST') SELECT * FROM lost",
+        SCHEMA,
+      ),
+    ).toEqual([]);
+    expect(
+      lint(
+        "WITH lost AS (SELECT sheep_name, last_zone FROM livestock_logs WHERE status = 'LOST') SELECT lost.sheep_name FROM lost",
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('CTE dengan daftar kolom eksplisit WITH x(a, b) dikenal', () => {
+    expect(
+      lint(
+        'WITH l(a, b) AS (SELECT sheep_name, last_zone FROM livestock_logs) SELECT a, b FROM l',
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('kolom di luar proyeksi CTE tetap ditolak', () => {
+    const errors = lint(
+      "WITH lost AS (SELECT sheep_name, last_zone FROM livestock_logs WHERE status = 'LOST') SELECT zona FROM lost",
+      SCHEMA,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('"zona"');
+  });
+
+  it('kolom tak dikenal DI DALAM CTE tetap ditolak', () => {
+    const errors = lint(
+      "WITH lost AS (SELECT nama_domba FROM livestock_logs) SELECT * FROM lost",
+      SCHEMA,
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('nama_domba');
+  });
+
+  it('C6: identifier kurung siku [kolom] diterima seperti identifier biasa', () => {
+    expect(
+      lint(
+        "SELECT [sheep_name], [last_zone] FROM [livestock_logs] WHERE [status] = 'LOST'",
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('kurung siku di dalam string literal tidak diubah maknanya', () => {
+    expect(
+      lint(
+        "SELECT sheep_name FROM livestock_logs WHERE status = '[LOST]'",
+        SCHEMA,
+      ),
+    ).toEqual([]);
+  });
+
+  it('kolom tak dikenal berkurung siku tetap ditolak dengan nama bersih', () => {
+    const errors = lint('SELECT [nama_domba] FROM livestock_logs', SCHEMA);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('nama_domba');
+    expect(errors[0].suggestion).toContain('sheep_name');
+  });
 });

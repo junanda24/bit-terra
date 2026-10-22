@@ -223,6 +223,18 @@ export class SoundController {
   private tick(): void {
     if (!this.ctx || !this.started) return;
     const ahead = 0.12;
+    // Lag guard (audit CORE-L9): after a stall — throttled background tab,
+    // machine sleep — nextStepTime can sit tens of seconds in the past and
+    // the loop below would burst-schedule the entire backlog in one tick
+    // (measured: ~170 sources after a 30 s jump). If we are more than one
+    // step behind, skip the missed steps wholesale: realign to now in
+    // whole steps so the chord progression stays coherent, and let the
+    // normal lookahead schedule only the step(s) actually due.
+    if (this.nextStepTime < this.ctx.currentTime - STEP_DUR) {
+      const skipped = Math.ceil((this.ctx.currentTime - this.nextStepTime) / STEP_DUR);
+      this.step += skipped;
+      this.nextStepTime += skipped * STEP_DUR;
+    }
     while (this.nextStepTime < this.ctx.currentTime + ahead) {
       this.scheduleStep(this.step, this.nextStepTime);
       this.nextStepTime += STEP_DUR;

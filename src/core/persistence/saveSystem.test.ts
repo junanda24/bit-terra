@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildEnvelope,
+  flushSave,
   inspectEnvelope,
+  installFlushOnHide,
   parseSaveText,
   quarantineRaw,
+  save,
   validateEnvelope,
   type KeyValueStorage,
   type SavePayload,
@@ -109,5 +112,75 @@ describe('quarantine', () => {
       },
     };
     expect(quarantineRaw('x', throwing)).toBeNull();
+  });
+});
+
+describe('flushSave + installFlushOnHide (CORE-M2)', () => {
+  class FakeTarget {
+    visibilityState = 'visible';
+    private listeners = new Map<string, Set<() => void>>();
+    addEventListener(type: string, fn: () => void) {
+      if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+      this.listeners.get(type)!.add(fn);
+    }
+    removeEventListener(type: string, fn: () => void) {
+      this.listeners.get(type)?.delete(fn);
+    }
+    fire(type: string) {
+      for (const fn of this.listeners.get(type) ?? []) fn();
+    }
+    count(type: string) {
+      return this.listeners.get(type)?.size ?? 0;
+    }
+  }
+
+  it('flushSave with nothing pending resolves true; a pending payload is attempted then consumed', async () => {
+    await expect(flushSave()).resolves.toBe(true);
+    save(samplePayload);
+    // Node has no IndexedDB, so the write attempt itself fails (false) —
+    // exactly the observable the audit probe used to prove a pending
+    // payload really was waiting unsaved.
+    await expect(flushSave()).resolves.toBe(false);
+    await expect(flushSave()).resolves.toBe(true); // consumed
+  });
+
+  it('pagehide flushes the pending payload; uninstall stops the wiring', async () => {
+    const win = new FakeTarget();
+    const doc = new FakeTarget();
+    const uninstall = installFlushOnHide({ win, doc });
+    expect(win.count('pagehide')).toBe(1);
+    expect(win.count('beforeunload')).toBe(1);
+    expect(doc.count('visibilitychange')).toBe(1);
+
+    save(samplePayload);
+    win.fire('pagehide');
+    await expect(flushSave()).resolves.toBe(true); // listener consumed it
+
+    uninstall();
+    expect(win.count('pagehide')).toBe(0);
+    save(samplePayload);
+    win.fire('pagehide'); // no listener anymore
+    await expect(flushSave()).resolves.toBe(false); // still pending until WE flush
+  });
+
+  it('visibilitychange flushes only when hidden; beforeunload flushes too', async () => {
+    const win = new FakeTarget();
+    const doc = new FakeTarget();
+    const uninstall = installFlushOnHide({ win, doc });
+
+    save(samplePayload);
+    doc.visibilityState = 'visible';
+    doc.fire('visibilitychange');
+    await expect(flushSave()).resolves.toBe(false); // still pending (this flush attempt drains it)
+
+    save(samplePayload);
+    doc.visibilityState = 'hidden';
+    doc.fire('visibilitychange');
+    await expect(flushSave()).resolves.toBe(true); // listener consumed it
+
+    save(samplePayload);
+    win.fire('beforeunload');
+    await expect(flushSave()).resolves.toBe(true);
+    uninstall();
   });
 });

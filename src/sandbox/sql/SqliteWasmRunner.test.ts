@@ -100,4 +100,27 @@ describe('SqliteWasmRunner', () => {
     const runner = new SqliteWasmRunner();
     expect(() => runner.runQuery('SELECT 1')).toThrow(/init/);
   });
+
+  it('snapshot/restore: perubahan sesudah snapshot lenyap saat dipulihkan (SQL-H1)', async () => {
+    const runner = new SqliteWasmRunner();
+    await runner.init(SEED);
+    const snapshot = runner.exportSnapshot();
+    runner.runQuery("UPDATE livestock_logs SET status = 'HOME'");
+    runner.runQuery('DROP TABLE livestock_logs');
+    expect(runner.getSchema()).toEqual([]);
+    runner.restoreSnapshot(snapshot);
+    // Tabel yang di-DROP hidup lagi dengan isi persis seperti semula.
+    expect(runner.getSchema()).toEqual([
+      {
+        table: 'livestock_logs',
+        columns: ['id', 'sheep_name', 'last_zone', 'status'],
+      },
+    ]);
+    expect(
+      runner.runQuery(
+        "SELECT sheep_name FROM livestock_logs WHERE status = 'LOST' ORDER BY id",
+      ).rows.map((r) => r.sheep_name),
+    ).toEqual(['Srintil', 'Mbah Woof']);
+    runner.dispose();
+  });
 });
