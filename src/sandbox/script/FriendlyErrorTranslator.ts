@@ -95,14 +95,22 @@ export function syntaxError(err: unknown): FriendlyError {
 /** Fungsi/modul yang tidak ada di registry Bot API. */
 export function unknownFunctionError(name: string, line: number, allowed: Iterable<string>): FriendlyError {
   const allowedList = [...allowed];
+  // Saran HANYA boleh menyebut fungsi yang benar-benar ada di daftar
+  // allowed — dan dibatasi ke objek yang sama dengan yang dipanggil pemain
+  // (piko.* tidak pernah dicampur gate.*, dst.), supaya tidak pernah muncul
+  // kombinasi karangan seperti "gate.charge" (temuan playtest F-10).
+  const root = name.includes('.') ? name.slice(0, name.indexOf('.')) : null;
+  const scoped =
+    root !== null ? allowedList.filter((a) => a.startsWith(`${root}.`)) : allowedList;
+  const pool = scoped.length > 0 ? scoped : allowedList;
   const short = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : name;
-  const guess = closestName(short, allowedList.map((a) => (a.includes('.') ? a.slice(a.lastIndexOf('.') + 1) : a)));
+  const guess = closestName(short, pool.map((a) => (a.includes('.') ? a.slice(a.lastIndexOf('.') + 1) : a)));
   let suggestion: string;
   if (guess) {
-    const full = allowedList.find((a) => a.endsWith(guess));
+    const full = pool.find((a) => a.endsWith(guess));
     suggestion = `Apakah maksudmu ${full ?? guess}()? Cek lagi ejaan nama fungsinya ya.`;
-  } else if (allowedList.length > 0) {
-    suggestion = `Modul yang Piko punya sekarang: ${allowedList.join(', ')}.`;
+  } else if (pool.length > 0) {
+    suggestion = `Modul yang Piko punya sekarang: ${pool.join(', ')}.`;
   } else {
     suggestion = 'Quest ini belum membuka modul apa pun untuk Piko.';
   }

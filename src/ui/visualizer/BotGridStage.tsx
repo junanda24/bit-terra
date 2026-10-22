@@ -1,52 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { QuestDefinition } from '../../shared/types';
 import { eventBus } from '../../core/bridge/eventBus';
+import {
+  botStageStatusText,
+  createBotStageReducer,
+  createBotStageState,
+  normalizeBotAction,
+  type BotStageState,
+} from './botStageLogic';
 
 type BotWorldSetup = NonNullable<QuestDefinition['botWorldSetup']>;
 
-/** 0 = timur, 1 = selatan, 2 = barat, 3 = utara. */
-export type Facing = 0 | 1 | 2 | 3;
-
-export interface BotPose {
-  x: number;
-  y: number;
-  facing: Facing;
-  awake: boolean;
-  charged: boolean;
-  dizzy: boolean;
-  onTarget: boolean;
-}
-
-export type BotActionKind =
-  | 'move'
-  | 'turn-left'
-  | 'turn-right'
-  | 'boot'
-  | 'charge'
-  | 'open'
-  | 'close'
-  | 'unknown';
-
-/** Normalisasi nama aksi bot: "piko.moveForward" → move, "gate.open" → open. */
-export function normalizeBotAction(action: string): BotActionKind {
-  const base = action.split('.').pop()?.toLowerCase() ?? '';
-  if (base === 'moveforward' || base === 'move' || base === 'forward' || base === 'step') return 'move';
-  if (base === 'turnleft' || base === 'left') return 'turn-left';
-  if (base === 'turnright' || base === 'right') return 'turn-right';
-  if (base === 'boot' || base === 'wake' || base === 'wakeup' || base === 'on') return 'boot';
-  if (base === 'charge' || base === 'charging' || base === 'isi-daya') return 'charge';
-  if (base === 'open') return 'open';
-  if (base === 'close') return 'close';
-  return 'unknown';
-}
-
-const DELTAS: Record<Facing, [number, number]> = {
-  0: [1, 0],
-  1: [0, 1],
-  2: [-1, 0],
-  3: [0, -1],
-};
+/** Pose bot = state logika panggung (botStageLogic). Diekspor ulang agar
+ * pemakai lama (CyberDeckScreen, ui/index) tidak berubah kontraknya. */
+export type BotPose = BotStageState;
+export { normalizeBotAction };
+export type { BotActionKind, Facing } from './botStageLogic';
 
 function SunPatch() {
   return (
@@ -90,6 +60,52 @@ function DizzyStars() {
           />
         </svg>
       ))}
+    </motion.div>
+  );
+}
+
+/** Igauan robot tertidur: perintah yang fizzle hanya menghasilkan "Zzz". */
+function SleepZzz() {
+  return (
+    <motion.div
+      aria-hidden
+      className="absolute -top-[40%] right-[2%] z-20"
+      initial={{ opacity: 0, y: 5 }}
+      animate={{ opacity: [0, 1, 1, 0], y: -7 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 1.15, ease: 'easeOut' }}
+    >
+      <span
+        className="text-[15px] font-bold"
+        style={{
+          fontFamily: "'Pixelify Sans', sans-serif",
+          color: '#aebdd1',
+          textShadow: '0 1px 3px rgba(0,0,0,0.8)',
+        }}
+      >
+        Zzz
+      </span>
+    </motion.div>
+  );
+}
+
+/** Zap redup: charge dicoba di tempat gelap — ada percik, tidak ada cahaya. */
+function DimZap() {
+  return (
+    <motion.div
+      aria-hidden
+      className="absolute -top-[42%] left-1/2 z-20 -translate-x-1/2"
+      animate={{ opacity: [0.9, 0.4, 0.75], scale: [1, 0.9, 1] }}
+      transition={{ duration: 0.65, repeat: Infinity, ease: 'easeInOut' }}
+    >
+      <svg viewBox="0 0 24 24" className="h-5 w-5">
+        <path
+          d="M13 2 L4.5 13.5 H11 L9.5 22 L19 9.5 H12.5 Z"
+          fill="#8d99ab"
+          stroke="#5b6b7f"
+          strokeWidth="1.4"
+        />
+      </svg>
     </motion.div>
   );
 }
@@ -149,38 +165,21 @@ export interface BotGridStageProps {
 
 /**
  * Panggung grid DOM — pengganti sementara dunia Phaser (Fase 2).
- * Mendengarkan BOT_ACTION dari eventBus: Piko melangkah sel demi sel mengikuti
- * baris kode pemain; menabrak rintangan = bintang pusing (gagal itu lucu).
- * Komponen ini mandiri: tidak menyentuh Phaser sama sekali.
+ * Semua semantik dunia hidup di reducer murni botStageLogic: urutan boot
+ * ditegakkan (aksi saat tertidur fizzle jadi "Zzz"), charge di tempat gelap
+ * adalah sinyal 'charged-dark' sendiri (zap redup), dan tabrakan adalah
+ * latch per run yang terpisah. Komponen ini hanya menggambar + meneruskan
+ * event bus ke reducer.
  */
 export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseChange }: BotGridStageProps) {
   const [cols, rows] = setup.gridSize;
-  const obstacleSet = useMemo(
-    () => new Set(setup.obstacles.map(([x, y]) => `${x},${y}`)),
-    [setup.obstacles],
-  );
-  const targetSet = useMemo(
-    () => new Set(setup.targets.map(([x, y]) => `${x},${y}`)),
-    [setup.targets],
+  const reducer = useMemo(() => createBotStageReducer(setup), [setup]);
+  const [pose, dispatch] = useReducer(reducer, startPos, (sp) =>
+    createBotStageState(setup, sp),
   );
 
-  const initialPose = useCallback((): BotPose => {
-    const [sx, sy] = startPos;
-    return {
-      x: sx,
-      y: sy,
-      facing: 0,
-      awake: false,
-      charged: false,
-      dizzy: false,
-      onTarget: targetSet.has(`${sx},${sy}`),
-    };
-  }, [startPos, targetSet]);
-
-  const [pose, setPose] = useState<BotPose>(initialPose);
-  const poseRef = useRef(pose);
-  poseRef.current = pose;
-  const dizzyTimer = useRef<number | undefined>(undefined);
+  const startPosRef = useRef(startPos);
+  startPosRef.current = startPos;
   const onPoseChangeRef = useRef(onPoseChange);
   onPoseChangeRef.current = onPoseChange;
 
@@ -188,76 +187,33 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
     onPoseChangeRef.current?.(pose);
   }, [pose]);
 
+  // Run baru / setup berganti → dunia kembali ke keadaan awal (latch
+  // tabrakan & charge-gelap ikut bersih; F-02).
   useEffect(() => {
-    setPose(initialPose());
-  }, [resetKey, initialPose]);
+    dispatch({ type: 'reset', startPos: startPosRef.current });
+  }, [resetKey, setup]);
 
-  const flashDizzy = useCallback(() => {
-    setPose((p) => ({ ...p, dizzy: true }));
-    window.clearTimeout(dizzyTimer.current);
-    dizzyTimer.current = window.setTimeout(() => {
-      setPose((p) => ({ ...p, dizzy: false }));
-    }, 1400);
-  }, []);
+  // Sinyal visual sesaat padam sendiri.
+  useEffect(() => {
+    if (!pose.dizzy && !pose.sleepFizzle && !pose.dimZap) return;
+    const id = window.setTimeout(() => dispatch({ type: 'clear-transients' }), 1300);
+    return () => window.clearTimeout(id);
+  }, [pose.dizzy, pose.sleepFizzle, pose.dimZap]);
 
   useEffect(() => {
     const handleAction = ({ action, args }: { action: string; args: unknown[] }) => {
-      const kind = normalizeBotAction(action);
-      const cur = poseRef.current;
-      switch (kind) {
-        case 'boot':
-          setPose((p) => ({ ...p, awake: true }));
-          break;
-        case 'turn-left':
-          setPose((p) => ({ ...p, facing: ((p.facing + 3) % 4) as Facing }));
-          break;
-        case 'turn-right':
-          setPose((p) => ({ ...p, facing: ((p.facing + 1) % 4) as Facing }));
-          break;
-        case 'move': {
-          const stepsRaw = typeof args[0] === 'number' ? Math.floor(args[0]) : 1;
-          const steps = Math.max(1, Math.min(12, stepsRaw || 1));
-          const [dx, dy] = DELTAS[cur.facing];
-          let nx = cur.x;
-          let ny = cur.y;
-          let crashed = false;
-          for (let i = 0; i < steps; i++) {
-            const tx = nx + dx;
-            const ty = ny + dy;
-            if (tx < 0 || ty < 0 || tx >= cols || ty >= rows || obstacleSet.has(`${tx},${ty}`)) {
-              crashed = true;
-              break;
-            }
-            nx = tx;
-            ny = ty;
-          }
-          setPose((p) => ({
-            ...p,
-            x: nx,
-            y: ny,
-            onTarget: targetSet.has(`${nx},${ny}`),
-          }));
-          if (crashed) flashDizzy();
-          break;
-        }
-        case 'charge': {
-          const on = targetSet.has(`${cur.x},${cur.y}`);
-          if (on) setPose((p) => ({ ...p, charged: true }));
-          else flashDizzy();
-          break;
-        }
-        default:
-          break;
-      }
+      dispatch({ type: 'bot', kind: normalizeBotAction(action), stepsArg: args[0] });
     };
-    const handleFunnyFail = () => flashDizzy();
+    const handleFunnyFail = ({ reactionKey }: { reactionKey: string }) => {
+      dispatch({ type: 'funny-fail', reactionKey });
+    };
     eventBus.on('BOT_ACTION', handleAction);
     eventBus.on('QUEST_FUNNY_FAIL', handleFunnyFail);
     return () => {
       eventBus.off('BOT_ACTION', handleAction);
       eventBus.off('QUEST_FUNNY_FAIL', handleFunnyFail);
     };
-  }, [cols, rows, obstacleSet, targetSet, flashDizzy]);
+  }, []);
 
   const cellPctW = 100 / cols;
   const cellPctH = 100 / rows;
@@ -325,7 +281,7 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
         animate={{
           left: `${pose.x * cellPctW}%`,
           top: `${pose.y * cellPctH}%`,
-          rotate: pose.dizzy ? [0, -7, 7, -5, 0] : 0,
+          rotate: pose.dizzy ? [0, -7, 7, -5, 0] : pose.sleepFizzle ? [0, -2, 2, 0] : 0,
         }}
         transition={{
           left: { type: 'spring', stiffness: 170, damping: 20 },
@@ -336,6 +292,8 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
         <div className="relative h-full w-full">
           <MiniPiko awake={pose.awake} charged={pose.charged} />
           <AnimatePresence>{pose.dizzy ? <DizzyStars key="dizzy" /> : null}</AnimatePresence>
+          <AnimatePresence>{pose.sleepFizzle ? <SleepZzz key="zzz" /> : null}</AnimatePresence>
+          <AnimatePresence>{pose.dimZap ? <DimZap key="zap" /> : null}</AnimatePresence>
         </div>
       </motion.div>
       {/* label status kecil */}
@@ -344,11 +302,18 @@ export function BotGridStage({ setup, startPos = [0, 0], resetKey = 0, onPoseCha
         style={{
           fontFamily: "'Pixelify Sans', sans-serif",
           backgroundColor: 'rgba(11,14,20,0.82)',
-          color: pose.charged ? '#f4b41b' : pose.awake ? '#7dffcb' : '#8d99ab',
+          color:
+            pose.status === 'charged'
+              ? '#f4b41b'
+              : pose.status === 'charged-dark'
+                ? '#d8a84e'
+                : pose.awake
+                  ? '#7dffcb'
+                  : '#8d99ab',
           border: '1.5px solid rgba(216,204,184,0.25)',
         }}
       >
-        {pose.charged ? 'Daya terisi penuh' : pose.awake ? 'Piko aktif' : 'Piko tertidur'}
+        {botStageStatusText(pose)}
       </div>
     </div>
   );

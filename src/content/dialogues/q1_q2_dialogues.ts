@@ -136,8 +136,19 @@ export const Q1_Q2_DIALOGUES: Record<string, QuestDialogueScript> = {
   },
 };
 
-/** Ambil naskah dialog satu quest (undefined bila quest belum punya dialog). */
+/**
+ * Ambil baris dialog satu quest untuk satu fase (intro / success /
+ * funnyFail / hintN). Undefined bila quest atau fase itu belum punya dialog.
+ */
 export function getQuestDialogue(
+  questId: string,
+  phase: DialoguePhase,
+): DialogueLine[] | undefined {
+  return Q1_Q2_DIALOGUES[questId]?.[phase];
+}
+
+/** Ambil seluruh naskah dialog satu quest (undefined bila belum ada). */
+export function getQuestDialogueScript(
   questId: string,
 ): QuestDialogueScript | undefined {
   return Q1_Q2_DIALOGUES[questId];

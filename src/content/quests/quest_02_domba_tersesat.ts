@@ -76,7 +76,9 @@ INSERT INTO livestock_logs (id, sheep_name, last_zone, status) VALUES (12, 'Kuci
     no_rows:
       'Hasilnya kosong melompong. Pak Rani menggaruk kepalanya: "Lho, masa iya domba-dombaku berubah jadi data hantu?" Coba periksa lagi nilai status yang kamu cari — ejaannya harus persis sama dengan yang ada di tabel.',
     wrong_column:
-      'Kolom yang kamu minta tidak pernah ada di catatan kalung domba. Piko memiringkan kepalanya sampai antenanya miring juga: "Aku sudah cari ke semua laci data. Kolom itu memang tidak ada, dari dulu."',
+      'Jumlah kolomnya belum pas. Pak Rani cuma butuh dua hal dari catatan itu: nama domba (sheep_name) dan zona terakhirnya (last_zone) — tidak kurang, tidak lebih. Piko menghitungnya sekali lagi pakai jari-jari robotnya yang mungil, lalu menunjuk daftar SELECT-mu: "Coba samakan dengan dua itu, ya."',
+    wrong_result:
+      'Barisnya pas tiga, tapi isinya bukan tiga domba yang hilang. Pak Rani membaca daftar itu dua kali, keningnya berkerut: "Lho, bukan yang ini yang kabur semalam, Nak." Saringannya sudah dekat — pastikan yang tampil hanya domba yang statusnya LOST.',
     syntax_error:
       'Cyber-Deck mengeluarkan bunyi "krtk... krtk..." lalu berhenti, seperti tersedak sebaris tulisan. Ada yang kurang pas di susunan kalimat perintahmu — coba baca lagi dari kata SELECT-nya.',
   },

@@ -15,14 +15,26 @@ import { logError } from '../../app/errorLog';
 import { nextStepWithTimeout, STEP_WATCHDOG_MS } from './stepWatchdog';
 import { CyberDeckFrame, type LampState } from './CyberDeckFrame';
 import { RunLever } from './RunLever';
-import { InteractiveEditor } from './InteractiveEditor';
+import { InteractiveEditor, type InteractiveEditorHandle } from './InteractiveEditor';
 import { SqlTableVisualizer } from '../visualizer/SqlTableVisualizer';
 import { BotGridStage, type BotPose } from '../visualizer/BotGridStage';
+import { botQuestVerdict } from '../visualizer/botStageLogic';
 import { PikoMascotWidget } from '../visualizer/PikoMascotWidget';
 import { FocusBar } from '../hud/FocusBar';
 import { CartridgeBar } from '../hud/CartridgeBar';
+import { getCartridgeSnippet } from '../hud/cartridgeSnippets';
 import { DialogueBox } from '../hud/DialogueBox';
 import { PixelButton } from '../design-system/PixelButton';
+import {
+  getQuestDialogue,
+  type DialogueLine,
+} from '../../content/dialogues/q1_q2_dialogues';
+import {
+  FOCUS_FAIL_COST,
+  FOCUS_SUCCESS_REWARD,
+  shouldDeductFocusOnFail,
+} from './focusPolicy';
+import { humanizeWorldEvent } from './dialogueHelpers';
 
 /** Fungsi bot yang dikenal Piko di Fase 1 (gerbang registry BotApiBindings). */
 const BASE_BOT_FUNCTIONS = [
@@ -38,12 +50,22 @@ const BASE_BOT_FUNCTIONS = [
 function allowedBotFunctions(quest: QuestDefinition): string[] {
   const set = new Set(BASE_BOT_FUNCTIONS);
   for (const cart of quest.unlockedCartridges) {
+    // Sumber kebenaran pemilik fungsi adalah SNIPPET cartridge itu sendiri:
+    // 'boot()' → "piko.boot();", 'open()' → "gate.open();". Dulu nama polos
+    // diperluas ke piko.* DAN gate.* sekaligus, sehingga daftar modul Piko
+    // tercemar kombinasi karangan seperti "gate.charge" (temuan F-10).
+    const snippetHead = /^([A-Za-z]+(?:\.[A-Za-z]+)+)\s*\(/.exec(
+      getCartridgeSnippet(cart).trim(),
+    );
+    if (snippetHead) {
+      set.add(snippetHead[1]);
+      continue;
+    }
     const base = cart.replace(/\(\)\s*$/, '').trim();
     if (base.includes('.')) {
       set.add(base);
     } else if (/^[A-Za-z]+$/.test(base)) {
       set.add(`piko.${base}`);
-      set.add(`gate.${base}`);
     }
   }
   return [...set];
@@ -82,10 +104,14 @@ export interface CyberDeckScreenProps {
 
 /**
  * Layar Cyber-Deck lengkap: komposisi semua komponen UI Fase 1 + otak
- * eksekusinya. Tarik tuas → EXECUTE_CODE → SQL: query dijalankan, dipindai,
- * dicocokkan ResultDiffChecker; Bot: StepInterpreter berjalan baris demi
- * baris dan dunia grid bergerak sinkron. Gagal tidak pernah menakutkan:
- * selalu reaksi lucu dari data quest + Piko yang bicara, fokus −10.
+ * eksekusinya. Tarik tuas → gerbang linter dulu (RUN tidak pernah membuang
+ * diagnosis linter, F-07) → SQL: query dijalankan, dipindai, dicocokkan
+ * ResultDiffChecker; Bot: StepInterpreter berjalan baris demi baris dan
+ * dunia grid bergerak sinkron, verdict dari botQuestVerdict (urutan boot
+ * ditegakkan dunia, F-01/F-02). Gagal tidak pernah menakutkan: reaksi lucu
+ * dari data quest + dialog hasil karya penulis + Piko yang bicara (F-03).
+ * Fokus hanya dipotong untuk kesalahan konsep yang lolos linter pada kode
+ * yang sudah diubah pemain (F-04/F-09); quest tuntas mengisinya kembali.
  */
 export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const sayPiko = useGameStore((s) => s.sayPiko);
@@ -104,6 +130,10 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const [dbReady, setDbReady] = useState(false);
   const [engineFailed, setEngineFailed] = useState(false);
   const [botResetKey, setBotResetKey] = useState(0);
+  // Urutan dialog hasil karya penulis (intro / sukses / funnyFail) yang
+  // sedang diputar di slot DialogueBox (F-03). null = tampilkan storyContext.
+  const [dialogue, setDialogue] = useState<{ lines: DialogueLine[]; idx: number } | null>(null);
+  const [dialogueLineDone, setDialogueLineDone] = useState(false);
 
   const codeRef = useRef(code);
   const runningRef = useRef(false);
@@ -111,10 +141,14 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const schemaRef = useRef<ReturnType<SqliteWasmRunner['getSchema']>>([]);
   const pendingResultRef = useRef<SqlRunResult | null>(null);
   const poseRef = useRef<BotPose | null>(null);
-  const crashedRef = useRef(false);
   const runTokenRef = useRef(0);
   const hintIdxRef = useRef(0);
   const linterWarnedRef = useRef(false);
+  // Snapshot keputusan fokus untuk run yang sedang berjalan (F-04/F-09):
+  // dihitung sekali di gerbang eksekusi dari kode + status linter saat RUN.
+  const deductFocusRef = useRef(false);
+  const editorRef = useRef<InteractiveEditorHandle | null>(null);
+  const experimentNotedRef = useRef(false);
 
   const isBot = quest.mode === 'BOT_SCRIPT';
 
@@ -126,6 +160,21 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     },
     [quest.id],
   );
+
+  /* ---------------- urutan dialog (F-03) ---------------- */
+  const startDialogue = useCallback((lines: DialogueLine[] | undefined) => {
+    if (!lines || lines.length === 0) return;
+    setDialogue({ lines, idx: 0 });
+    setDialogueLineDone(false);
+  }, []);
+
+  const advanceDialogue = useCallback(() => {
+    setDialogueLineDone(false);
+    setDialogue((d) => {
+      if (!d) return d;
+      return d.idx + 1 >= d.lines.length ? null : { ...d, idx: d.idx + 1 };
+    });
+  }, []);
 
   /* ---------------- inisialisasi mesin SQL ---------------- */
   // Dipisah dari effect agar tombol "Coba Lagi" bisa menyalakan ulang mesin
@@ -179,6 +228,13 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     pendingResultRef.current = null;
     poseRef.current = null;
     hintIdxRef.current = 0;
+    deductFocusRef.current = false;
+    experimentNotedRef.current = false;
+    setDialogue(null);
+    setDialogueLineDone(false);
+    // Dialog intro hasil karya penulis diputar saat deck quest dibuka
+    // (surat Kakek untuk Q1, kepanikan Pak Rani untuk Q2) — F-03.
+    startDialogue(getQuestDialogue(quest.id, 'intro'));
     useGameStore
       .getState()
       .setCurrentQuest(quest.id, quest.mode === 'BOT_SCRIPT' ? 'BOT_SCRIPT' : 'SQL');
@@ -194,21 +250,23 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     };
   }, [quest, startEngine]);
 
-  /* ---------------- linter real-time (debounce 150ms) ---------------- */
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      let errors: LintError[] = [];
+  /* ---------------- linter ---------------- */
+  // Satu-satunya penghitung lint — dipakai panel real-time (debounce) DAN
+  // gerbang RUN, supaya keduanya tidak pernah berbeda pendapat (F-07).
+  const runLint = useCallback(
+    (codeToLint: string): LintError[] => {
       try {
         if (isBot) {
-          errors = ScriptLinter.lint(code, allowedBotFunctions(quest));
-        } else if (schemaRef.current.length > 0) {
-          errors = SqlAstLinter.lint(code, schemaRef.current);
+          return ScriptLinter.lint(codeToLint, allowedBotFunctions(quest));
         }
+        if (schemaRef.current.length > 0) {
+          return SqlAstLinter.lint(codeToLint, schemaRef.current);
+        }
+        return [];
       } catch (err) {
         // Linter yang macet tidak boleh berpura-pura kode bersih: catat ke
         // log dan beri tahu pemain satu kali bahwa catatan otomatis sedang
         // berhenti, sementara RUN tetap bisa dipakai (BLUEPRINT §7).
-        errors = [];
         console.error('[BitTerra] Linter gagal berjalan:', err);
         logError(err, 'linter');
         if (!linterWarnedRef.current) {
@@ -218,18 +276,38 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
             'confused',
           );
         }
+        return [];
       }
+    },
+    [isBot, quest, sayPiko],
+  );
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      const errors = runLint(code);
       setLintErrors(errors);
       eventBus.emit('LINTER_STATE', { errors });
     }, 150);
     return () => window.clearTimeout(id);
-  }, [code, quest, isBot, dbReady, sayPiko]);
+  }, [code, runLint, dbReady]);
 
   /* ---------------- jalur selesai ---------------- */
   const successPath = useCallback(() => {
     SoundController.playSFX('success');
     useGameStore.getState().completeQuest(quest.id);
+    // Quest tuntas = istirahat yang terbayar: fokus pulih (F-04).
+    useGameStore.getState().adjustFocus(FOCUS_SUCCESS_REWARD);
     sayPiko(`Berhasil! Misi "${quest.title}" tuntas. Kerja bagus, Fixer.`, 'happy');
+    // Dialog sukses hasil karya penulis + perubahan dunia yang tadinya
+    // data mati — sekarang benar-benar tampil ke pemain (F-03).
+    const lines: DialogueLine[] = [...(getQuestDialogue(quest.id, 'success') ?? [])];
+    if (quest.onSuccessWorldEvents.length > 0) {
+      lines.push({
+        speaker: 'Perubahan di desa',
+        text: quest.onSuccessWorldEvents.map(humanizeWorldEvent).join(' · '),
+      });
+    }
+    startDialogue(lines);
     void confetti({
       particleCount: 110,
       spread: 78,
@@ -237,7 +315,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       colors: CONFETTI_COLORS,
       disableForReducedMotion: true,
     });
-  }, [quest, sayPiko]);
+  }, [quest, sayPiko, startDialogue]);
 
   const funnyFail = useCallback(
     (reactionKey: string, textOverride?: string) => {
@@ -250,9 +328,15 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       SoundController.playSFX('fail');
       eventBus.emit('QUEST_FUNNY_FAIL', { questId: quest.id, reactionKey });
       sayPiko(text, 'shocked');
-      useGameStore.getState().adjustFocus(-10);
+      // Baris funnyFail hasil karya penulis menyusul reaksi Piko (F-03).
+      startDialogue(getQuestDialogue(quest.id, 'funnyFail'));
+      // Potongan fokus hanya bila snapshot gerbang RUN mengizinkan:
+      // kode sudah diubah pemain + linter bersih saat RUN (F-04/F-09).
+      if (deductFocusRef.current) {
+        useGameStore.getState().adjustFocus(-FOCUS_FAIL_COST);
+      }
     },
-    [quest, sayPiko],
+    [quest, sayPiko, startDialogue],
   );
 
   /* ---------------- eksekusi SQL ---------------- */
@@ -275,6 +359,10 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       successPath();
       return;
     }
+    // Pemilihan kunci reaksi (F-05/F-06): bentuk hitungan murni memakai
+    // no_rows / too_many_rows; kolom yang tidak pas memakai wrong_column
+    // (teksnya kini netral arah — kelebihan maupun kekurangan kolom);
+    // sisanya = kolom benar tetapi ISI baris tidak cocok → wrong_result.
     const expectedCols = Object.keys(expected[0] ?? {}).length;
     const key =
       result.rows.length === 0
@@ -334,7 +422,6 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   /* ---------------- eksekusi Bot ---------------- */
   const runBot = useCallback(async () => {
     const token = ++runTokenRef.current;
-    crashedRef.current = false;
     setBotResetKey((k) => k + 1);
     await sleep(240);
     if (runTokenRef.current !== token) return;
@@ -383,7 +470,11 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       }
     } catch (err) {
       if (err instanceof FriendlyError) {
-        funnyFail('interpreter_error', err.message);
+        // Pesan + saran ikut tampil — diagnosis tidak boleh terpotong (F-07).
+        funnyFail(
+          'interpreter_error',
+          err.suggestion ? `${err.message} ${err.suggestion}` : err.message,
+        );
       } else {
         console.error('[BitTerra] StepInterpreter gagal:', err);
         funnyFail(
@@ -414,23 +505,43 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       successPath();
       return;
     }
-    if (pose.awake && pose.onTarget && pose.charged) {
+    // Verdict murni dari pose akhir dunia (botStageLogic): urutan boot
+    // ditegakkan oleh panggung (aksi saat tertidur fizzle), tabrakan adalah
+    // latch per run dari kejadian tabrak sungguhan, dan charge di tempat
+    // gelap punya kuncinya sendiri — tidak ada lagi rantai if yang menelan
+    // semua kegagalan menjadi "tabrakan" (F-01/F-02).
+    const verdict = botQuestVerdict(pose, quest.onFailFunnyReactions);
+    if (verdict.kind === 'success') {
       successPath();
       return;
     }
-    const reactions = quest.onFailFunnyReactions;
-    let key = 'wrong_result';
-    if (!pose.awake && 'wrong_order' in reactions) key = 'wrong_order';
-    else if (crashedRef.current && 'hit_obstacle' in reactions) key = 'hit_obstacle';
-    else if (crashedRef.current && 'out_of_bounds' in reactions) key = 'out_of_bounds';
-    else if (pose.onTarget && !pose.charged && 'no_charge' in reactions) key = 'no_charge';
-    else if ('out_of_bounds' in reactions) key = 'out_of_bounds';
-    funnyFail(key);
+    funnyFail(verdict.reactionKey);
   }, [quest, funnyFail, successPath, sayPiko]);
 
   /* ---------------- gerbang eksekusi ---------------- */
   const execute = useCallback(() => {
     if (runningRef.current) return;
+    // Gerbang linter (F-07): RUN menghormati diagnosis linter. Bila masih
+    // ada error, TIDAK ada eksekusi dan TIDAK ada potongan fokus — Piko
+    // menyampaikan diagnosis PERTAMA persis dari linter (pesan + saran),
+    // bukan teks generik yang lebih buruk dari yang sudah dilihat pemain.
+    const freshLint = runLint(codeRef.current);
+    setLintErrors(freshLint);
+    eventBus.emit('LINTER_STATE', { errors: freshLint });
+    if (freshLint.length > 0) {
+      const first = freshLint[0];
+      sayPiko(
+        first.suggestion ? `${first.message} ${first.suggestion}` : first.message,
+        'confused',
+      );
+      return;
+    }
+    // Snapshot kebijakan fokus untuk run ini (F-04/F-09).
+    deductFocusRef.current = shouldDeductFocusOnFail({
+      code: codeRef.current,
+      initialCode: quest.initialCode,
+      lintErrors: freshLint,
+    });
     runningRef.current = true;
     setRunning(true);
     if (isBot) {
@@ -438,7 +549,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     } else {
       runSql();
     }
-  }, [isBot, runBot, runSql]);
+  }, [isBot, runBot, runSql, runLint, quest.initialCode, sayPiko]);
 
   const executeRef = useRef(execute);
   executeRef.current = execute;
@@ -456,12 +567,25 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   /* ---------------- interaksi UI ---------------- */
   const handleInsert = useCallback(
     (snippet: string) => {
+      // Quest yang sudah tuntas tidak dikunci lagi — tetapi pemain diberi
+      // tahu bahwa sisipan ini murni eksperimen (F-08 lanjutan).
+      if (isCompleted && !experimentNotedRef.current) {
+        experimentNotedRef.current = true;
+        sayPiko(
+          'Quest ini sudah selesai — kode diubah untuk eksperimen. Catatan selesainya tetap aman, jadi silakan utak-atik sepuasnya.',
+          'normal',
+        );
+      }
+      // Jalur utama: sisipkan TEPAT di kursor lewat handle imperatif editor
+      // (F-08 — dulu selalu menempel di akhir dokumen dan merusak semantik).
+      if (editorRef.current?.insertAtCursor(snippet)) return;
+      // Cadangan (editor belum ter-mount): tempel di akhir seperti dulu.
       const cur = codeRef.current;
       const sep = cur === '' || cur.endsWith('\n') ? '' : '\n';
       const tail = snippet.endsWith(';') || snippet.endsWith('}') ? '\n' : '';
       setCode(cur + sep + snippet + tail);
     },
-    [setCode],
+    [setCode, isCompleted, sayPiko],
   );
 
   const handleHint = useCallback(() => {
@@ -529,7 +653,36 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
         ) : null}
       </header>
 
-      <DialogueBox name={npcDisplayName(quest.giverNpcId)} text={quest.storyContext} />
+      {dialogue ? (
+        <div>
+          <div
+            onClick={() => {
+              // Klik pertama menyelesaikan efek ketik (diurus DialogueBox);
+              // klik berikutnya — setelah baris selesai — lanjut / tutup.
+              if (dialogueLineDone) advanceDialogue();
+            }}
+          >
+            <DialogueBox
+              key={`${quest.id}-dlg-${dialogue.idx}`}
+              name={dialogue.lines[dialogue.idx].speaker}
+              text={dialogue.lines[dialogue.idx].text}
+              onFinished={() => setDialogueLineDone(true)}
+            />
+          </div>
+          <p
+            className="mt-1 h-4 text-right text-[12px] font-semibold uppercase tracking-[0.14em]"
+            style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#8d99ab' }}
+          >
+            {dialogueLineDone
+              ? dialogue.idx + 1 >= dialogue.lines.length
+                ? 'Klik dialog untuk menutup'
+                : 'Klik dialog untuk lanjut'
+              : ''}
+          </p>
+        </div>
+      ) : (
+        <DialogueBox name={npcDisplayName(quest.giverNpcId)} text={quest.storyContext} />
+      )}
       <p
         className="-mt-1 text-[15px]"
         style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#d8ccb8' }}
@@ -624,6 +777,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                 <div className="flex min-h-0 flex-1">
                   <div className="w-[38%] min-w-[240px] shrink-0">
                     <InteractiveEditor
+                      ref={editorRef}
                       value={code}
                       onChange={setCode}
                       mode="BOT_SCRIPT"
@@ -642,7 +796,6 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                       resetKey={botResetKey}
                       onPoseChange={(pose) => {
                         poseRef.current = pose;
-                        if (pose.dizzy) crashedRef.current = true;
                       }}
                     />
                   </div>
@@ -651,6 +804,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="min-h-[180px] flex-1">
                     <InteractiveEditor
+                      ref={editorRef}
                       value={code}
                       onChange={setCode}
                       mode="SQL"

@@ -77,5 +77,7 @@ piko.___()
       'Piko mencoba mengisi daya padahal sistemnya belum dinyalakan. Dari speaker-nya hanya terdengar bunyi "tek... tek..." pelan, seperti orang mengigau minta dibangunkan dengan benar.',
     hit_obstacle:
       'Piko menabrak tumpukan kayu bakar dan terduduk terjengkang. Selembar daun kering mendarat persis di antenanya, seperti topi yang terlalu kecil.',
+    not_on_target:
+      'Piko berhenti dan mengisi daya di petak yang gelap gulita — layar kecilnya berpendar sendirian seperti kunang-kunang kesepian, tapi baterainya tetap kosong melompong. Sinar matahari pagi cuma ada di petak cahaya itu; di luar petak itu, mengisi daya berapa lama pun tidak akan pernah penuh.',
   },
 };

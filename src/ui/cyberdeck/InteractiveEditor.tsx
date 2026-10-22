@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   Decoration,
@@ -312,17 +312,32 @@ export interface InteractiveEditorProps {
   className?: string;
 }
 
-export function InteractiveEditor({
-  value,
-  onChange,
-  mode,
-  lintErrors = [],
-  currentLine = null,
-  readOnly = false,
-  autoFocus = false,
-  onKeystrokeBurst,
-  className = '',
-}: InteractiveEditorProps) {
+/** API imperatif editor — dipakai CyberDeckScreen untuk cartridge (F-08). */
+export interface InteractiveEditorHandle {
+  /**
+   * Sisipkan teks TEPAT di posisi kursor/seleksi saat ini (bukan di akhir
+   * dokumen). Mengembalikan false bila editor belum ter-mount, supaya
+   * pemanggil bisa jatuh ke perilaku cadangan (tempel di akhir).
+   */
+  insertAtCursor: (text: string) => boolean;
+  focus: () => void;
+}
+
+export const InteractiveEditor = forwardRef<InteractiveEditorHandle, InteractiveEditorProps>(
+  function InteractiveEditor(
+    {
+      value,
+      onChange,
+      mode,
+      lintErrors = [],
+      currentLine = null,
+      readOnly = false,
+      autoFocus = false,
+      onKeystrokeBurst,
+      className = '',
+    }: InteractiveEditorProps,
+    ref,
+  ) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -335,6 +350,29 @@ export function InteractiveEditor({
   const suppressRef = useRef(false);
   const streakRef = useRef(0);
   const [streak, setStreak] = useState(0);
+
+  // --- API imperatif: sisipkan di kursor (cartridge, F-08) ---
+  useImperativeHandle(
+    ref,
+    () => ({
+      insertAtCursor(text: string) {
+        const view = viewRef.current;
+        if (!view) return false;
+        const sel = view.state.selection.main;
+        view.dispatch({
+          changes: { from: sel.from, to: sel.to, insert: text },
+          selection: { anchor: sel.from + text.length },
+          scrollIntoView: true,
+        });
+        view.focus();
+        return true;
+      },
+      focus() {
+        viewRef.current?.focus();
+      },
+    }),
+    [],
+  );
 
   // --- buat EditorView sekali ---
   useEffect(() => {
@@ -485,6 +523,7 @@ export function InteractiveEditor({
       </AnimatePresence>
     </div>
   );
-}
+  },
+);
 
 export default InteractiveEditor;
