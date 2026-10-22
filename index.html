@@ -7,6 +7,67 @@
     <title>Bit-Terra: The Great Rollback</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&family=Press+Start+2P&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script>
+  // Bit-Terra chunk-stale guard (self-healing, BLUEPRINT §7). This inline
+  // script is the only code guaranteed to exist when the entry bundle is
+  // stale after a redeploy: if the bundle never executes (main.tsx sets
+  // window.__BITTERRA_BOOTED__), reload at most once per 60s window. A
+  // second failure shows an honest fallback instead of looping forever.
+  (function () {
+    var KEY = 'bitterra:chunk-reload-at';
+    var WINDOW_MS = 60000;
+    function showFallback() {
+      var div = document.createElement('div');
+      div.setAttribute('role', 'alert');
+      div.style.cssText =
+        'position:fixed;inset:0;background:#141820;color:#d8ccb8;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;font-family:sans-serif;z-index:9999';
+      var msg = document.createElement('p');
+      msg.textContent =
+        'Aplikasi gagal dimuat — berkas aplikasi kemungkinan sudah berubah sejak halaman ini dibuka.';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Muat Ulang Halaman';
+      btn.style.cssText =
+        'border:2px solid #ffb000;background:#ffb000;color:#141820;padding:8px 16px;font-weight:600;cursor:pointer';
+      btn.addEventListener('click', function () {
+        try {
+          sessionStorage.removeItem(KEY);
+        } catch (e) {
+          /* abaikan */
+        }
+        window.location.reload();
+      });
+      div.appendChild(msg);
+      div.appendChild(btn);
+      document.body.appendChild(div);
+    }
+    function tryReload() {
+      var now = Date.now();
+      try {
+        var last = Number(sessionStorage.getItem(KEY) || '0');
+        if (last && now - last < WINDOW_MS) {
+          showFallback();
+          return;
+        }
+        sessionStorage.setItem(KEY, String(now));
+      } catch (e) {
+        /* storage tidak tersedia — tetap coba satu kali muat ulang */
+      }
+      window.location.reload();
+    }
+    window.addEventListener(
+      'error',
+      function (e) {
+        var t = e && e.target;
+        if (t && t.tagName === 'SCRIPT' && t.src) tryReload();
+      },
+      true,
+    );
+    window.setTimeout(function () {
+      if (!window.__BITTERRA_BOOTED__) tryReload();
+    }, 15000);
+  })();
+</script>
 </head>
   <body>
     <div id="root"></div>

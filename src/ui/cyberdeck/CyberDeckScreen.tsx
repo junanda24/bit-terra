@@ -11,6 +11,8 @@ import { StepInterpreter } from '../../sandbox/script/StepInterpreter';
 import { ScriptLinter } from '../../sandbox/script/ScriptLinter';
 import { FriendlyError } from '../../sandbox/script/FriendlyErrorTranslator';
 import { createBotApi } from '../../sandbox/script/BotApiBindings';
+import { logError } from '../../app/errorLog';
+import { nextStepWithTimeout, STEP_WATCHDOG_MS } from './stepWatchdog';
 import { CyberDeckFrame, type LampState } from './CyberDeckFrame';
 import { RunLever } from './RunLever';
 import { InteractiveEditor } from './InteractiveEditor';
@@ -70,6 +72,9 @@ const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms))
 
 const CONFETTI_COLORS = ['#f4b41b', '#00f5d4', '#c87d55', '#4b724f', '#ffb000'];
 
+/** Query SQL di atas ambang ini dicatat ke error log (BLUEPRINT §7). */
+const SLOW_QUERY_LOG_MS = 2_000;
+
 export interface CyberDeckScreenProps {
   quest: QuestDefinition;
   onClose?: () => void;
@@ -97,6 +102,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const [sourceRows, setSourceRows] = useState<Record<string, unknown>[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [dbReady, setDbReady] = useState(false);
+  const [engineFailed, setEngineFailed] = useState(false);
   const [botResetKey, setBotResetKey] = useState(0);
 
   const codeRef = useRef(code);
@@ -108,6 +114,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
   const crashedRef = useRef(false);
   const runTokenRef = useRef(0);
   const hintIdxRef = useRef(0);
+  const linterWarnedRef = useRef(false);
 
   const isBot = quest.mode === 'BOT_SCRIPT';
 
@@ -120,33 +127,20 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     [quest.id],
   );
 
-  /* ---------------- inisialisasi per quest ---------------- */
-  useEffect(() => {
-    codeRef.current = useGameStore.getState().codeByQuest[quest.id] ?? quest.initialCode;
-    setCodeState(codeRef.current);
-    setLintErrors([]);
-    setSqlResult(null);
-    setSourceRows(null);
-    setScanning(false);
-    setCurrentLine(null);
-    pendingResultRef.current = null;
-    poseRef.current = null;
-    hintIdxRef.current = 0;
-    useGameStore
-      .getState()
-      .setCurrentQuest(quest.id, quest.mode === 'BOT_SCRIPT' ? 'BOT_SCRIPT' : 'SQL');
-
-    if (quest.mode === 'BOT_SCRIPT') {
-      setDbReady(false);
-      return;
-    }
+  /* ---------------- inisialisasi mesin SQL ---------------- */
+  // Dipisah dari effect agar tombol "Coba Lagi" bisa menyalakan ulang mesin
+  // yang sama. Kegagalan = mode degradasi yang jujur (BLUEPRINT §7): editor
+  // tetap bisa dipakai, RUN menjelaskan, tidak pernah layar kosong/hang.
+  const startEngine = useCallback(() => {
+    runnerRef.current?.dispose();
     const runner = new SqliteWasmRunner();
     runnerRef.current = runner;
-    let alive = true;
+    setEngineFailed(false);
+    setDbReady(false);
     runner
       .init(quest.sqlSeedScript ?? '')
       .then(() => {
-        if (!alive) return;
+        if (runnerRef.current !== runner) return;
         schemaRef.current = runner.getSchema();
         setDbReady(true);
         const first = schemaRef.current[0];
@@ -158,21 +152,47 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
           }
         }
       })
-      .catch(() => {
-        if (!alive) return;
+      .catch((err: unknown) => {
+        if (runnerRef.current !== runner) return;
+        console.error('[BitTerra] Mesin SQL gagal menyala:', err);
+        logError(err, 'sql-init');
+        setEngineFailed(true);
         setDbReady(false);
         sayPiko(
-          'Mesin data Cyber-Deck gagal menyala. Editor tetap bisa dibuka — coba muat ulang halaman ini sebentar lagi.',
+          'Mesin data Piko gagal menyala. Editor tetap bisa kamu pakai untuk menulis query — tekan tombol "Coba Nyalakan Mesin Data" di samping Piko untuk mencoba menyalakannya lagi.',
           'confused',
         );
       });
+  }, [quest, sayPiko]);
+
+  /* ---------------- inisialisasi per quest ---------------- */
+  useEffect(() => {
+    codeRef.current = useGameStore.getState().codeByQuest[quest.id] ?? quest.initialCode;
+    setCodeState(codeRef.current);
+    setLintErrors([]);
+    setSqlResult(null);
+    setSourceRows(null);
+    setScanning(false);
+    setCurrentLine(null);
+    setEngineFailed(false);
+    linterWarnedRef.current = false;
+    pendingResultRef.current = null;
+    poseRef.current = null;
+    hintIdxRef.current = 0;
+    useGameStore
+      .getState()
+      .setCurrentQuest(quest.id, quest.mode === 'BOT_SCRIPT' ? 'BOT_SCRIPT' : 'SQL');
+
+    if (quest.mode === 'BOT_SCRIPT') {
+      setDbReady(false);
+      return;
+    }
+    startEngine();
     return () => {
-      alive = false;
-      runner.dispose();
-      if (runnerRef.current === runner) runnerRef.current = null;
+      runnerRef.current?.dispose();
+      runnerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [quest]);
+  }, [quest, startEngine]);
 
   /* ---------------- linter real-time (debounce 150ms) ---------------- */
   useEffect(() => {
@@ -184,14 +204,26 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
         } else if (schemaRef.current.length > 0) {
           errors = SqlAstLinter.lint(code, schemaRef.current);
         }
-      } catch {
+      } catch (err) {
+        // Linter yang macet tidak boleh berpura-pura kode bersih: catat ke
+        // log dan beri tahu pemain satu kali bahwa catatan otomatis sedang
+        // berhenti, sementara RUN tetap bisa dipakai (BLUEPRINT §7).
         errors = [];
+        console.error('[BitTerra] Linter gagal berjalan:', err);
+        logError(err, 'linter');
+        if (!linterWarnedRef.current) {
+          linterWarnedRef.current = true;
+          sayPiko(
+            'Catatan otomatis Piko sedang macet, jadi periksa kodemu pelan-pelan ya. Tombol RUN tetap bisa dipakai.',
+            'confused',
+          );
+        }
       }
       setLintErrors(errors);
       eventBus.emit('LINTER_STATE', { errors });
     }, 150);
     return () => window.clearTimeout(id);
-  }, [code, quest, isBot, dbReady]);
+  }, [code, quest, isBot, dbReady, sayPiko]);
 
   /* ---------------- jalur selesai ---------------- */
   const successPath = useCallback(() => {
@@ -259,7 +291,9 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     const runner = runnerRef.current;
     if (!runner || !dbReady) {
       sayPiko(
-        'Mesin datanya belum menyala. Tunggu sebentar, atau muat ulang halaman ini.',
+        engineFailed
+          ? 'Mesin data Piko gagal menyala, jadi query belum bisa dijalankan. Tekan tombol "Coba Nyalakan Mesin Data" di samping Piko untuk mencoba lagi.'
+          : 'Mesin datanya belum menyala. Tunggu sebentar, atau muat ulang halaman ini.',
         'confused',
       );
       runningRef.current = false;
@@ -267,6 +301,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       return;
     }
     let result: SqlRunResult;
+    const startedAt = performance.now();
     try {
       result = runner.runQuery(codeRef.current);
     } catch (err) {
@@ -277,11 +312,24 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       funnyFail('syntax_error');
       return;
     }
+    // runQuery sinkron, jadi tidak ada watchdog async yang jujur untuknya —
+    // yang bisa dilakukan: ukur durasinya dan catat query yang lambat ke
+    // error log agar terlihat di panel Periksa Kesehatan (BLUEPRINT §7).
+    const elapsedMs = performance.now() - startedAt;
+    if (elapsedMs > SLOW_QUERY_LOG_MS) {
+      console.error(`[BitTerra] Query SQL lambat: ${elapsedMs.toFixed(0)}ms`);
+      logError(
+        new Error(
+          `Query SQL lambat: ${elapsedMs.toFixed(0)}ms (ambang ${SLOW_QUERY_LOG_MS}ms), quest ${quest.id}.`,
+        ),
+        'sql-slow-query',
+      );
+    }
     setSqlResult(result);
     eventBus.emit('SQL_RESULT', result);
     pendingResultRef.current = result;
     setScanning(true);
-  }, [dbReady, funnyFail, sayPiko]);
+  }, [dbReady, engineFailed, funnyFail, quest.id, sayPiko]);
 
   /* ---------------- eksekusi Bot ---------------- */
   const runBot = useCallback(async () => {
@@ -291,9 +339,35 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     await sleep(240);
     if (runTokenRef.current !== token) return;
     const registry = createBotApi(allowedBotFunctions(quest), {});
+    const iterator = StepInterpreter.run(codeRef.current, registry);
+    let watchdogStopped = false;
     try {
-      for await (const ev of StepInterpreter.run(codeRef.current, registry)) {
-        if (runTokenRef.current !== token) return;
+      for (;;) {
+        if (runTokenRef.current !== token) {
+          void iterator.return(undefined).catch(() => undefined);
+          return;
+        }
+        // Watchdog (BLUEPRINT §7): kalau satu langkah tidak kunjung datang
+        // (await patologis di interpreter), hentikan larian dengan bersih
+        // daripada membiarkan tuas RUN terkunci selamanya. Loop sinkron
+        // tak hingga sudah dibatasi LoopGuard 500 di interpreter.
+        const outcome = await nextStepWithTimeout(iterator.next(), STEP_WATCHDOG_MS);
+        if (outcome.timeout) {
+          watchdogStopped = true;
+          console.error(
+            `[BitTerra] Watchdog: eksekusi bot dihentikan — ${STEP_WATCHDOG_MS}ms tanpa StepEvent.`,
+          );
+          logError(
+            new Error(
+              `Watchdog menghentikan eksekusi bot quest ${quest.id}: tidak ada StepEvent selama ${STEP_WATCHDOG_MS}ms.`,
+            ),
+            'watchdog',
+          );
+          void iterator.return(undefined).catch(() => undefined);
+          break;
+        }
+        if (outcome.result.done) break;
+        const ev = outcome.result.value;
         setCurrentLine(ev.line);
         eventBus.emit('STEP_HIGHLIGHT', { line: ev.line });
         if (ev.kind === 'call' && ev.action) {
@@ -324,6 +398,15 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
       runningRef.current = false;
       setRunning(false);
     }
+    if (watchdogStopped) {
+      // Penghentian oleh sistem, BUKAN kesalahan pemain: fokus tidak
+      // dikurangi, tidak ada reaksi gagal — Piko menjelaskan dengan jujur.
+      sayPiko(
+        'Piko menghentikan jalannya program karena terlalu lama tidak ada langkah baru. Ini bukan salahmu — coba jalankan lagi; catatannya sudah tersimpan di log error.',
+        'confused',
+      );
+      return;
+    }
     await sleep(140);
     const pose = poseRef.current;
     const targets = quest.botWorldSetup?.targets ?? [];
@@ -343,7 +426,7 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
     else if (pose.onTarget && !pose.charged && 'no_charge' in reactions) key = 'no_charge';
     else if ('out_of_bounds' in reactions) key = 'out_of_bounds';
     funnyFail(key);
-  }, [quest, funnyFail, successPath]);
+  }, [quest, funnyFail, successPath, sayPiko]);
 
   /* ---------------- gerbang eksekusi ---------------- */
   const execute = useCallback(() => {
@@ -467,6 +550,26 @@ export function CyberDeckScreen({ quest, onClose }: CyberDeckScreenProps) {
               Ulangi Kode Awal
             </PixelButton>
           </div>
+          {!isBot && engineFailed ? (
+            <div
+              className="rounded-[4px] px-3 py-2"
+              style={{
+                backgroundColor: 'rgba(255,77,109,0.1)',
+                border: '2px solid rgba(255,77,109,0.45)',
+              }}
+            >
+              <p
+                className="mb-2 text-[13.5px] leading-snug"
+                style={{ fontFamily: "'Pixelify Sans', sans-serif", color: '#f2ead6' }}
+              >
+                Mesin data sedang mati, jadi query belum bisa dijalankan. Editor di
+                samping tetap bisa kamu pakai untuk menulis.
+              </p>
+              <PixelButton variant="copper" onClick={startEngine}>
+                Coba Nyalakan Mesin Data
+              </PixelButton>
+            </div>
+          ) : null}
           {lintErrors.length > 0 ? (
             <div
               className="rounded-[4px] px-3 py-2"

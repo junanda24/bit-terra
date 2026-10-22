@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { BootOverlay } from './app/BootOverlay';
+import { DiagnosticsPanel } from './app/DiagnosticsPanel';
 import { RecoveryBoundary } from './app/RecoveryBoundary';
-import { setBootStage } from './app/bootOverlay';
+import { setBootError, setBootStage } from './app/bootOverlay';
+import { logError } from './app/errorLog';
 import { selectPersistedProgress, useGameStore } from './core/bridge/gameStore';
 import {
   exportSave,
@@ -45,6 +47,7 @@ function AppShell() {
   const [quests, setQuests] = useState<QuestDefinition[]>([]);
   const [questsLoaded, setQuestsLoaded] = useState(false);
   const [musicOn, setMusicOn] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -60,14 +63,26 @@ function AppShell() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      setBootStage('Menyiapkan Cyber-Deck…');
-      const saved = await loadSave();
-      if (saved) useGameStore.getState().hydrate(saved);
-      const list = await loadQuestIndex();
-      if (cancelled) return;
-      setQuests(list);
-      setQuestsLoaded(true);
-      setReady(true);
+      try {
+        setBootStage('Menyiapkan Cyber-Deck…');
+        const saved = await loadSave();
+        if (saved) useGameStore.getState().hydrate(saved);
+        const list = await loadQuestIndex();
+        if (cancelled) return;
+        setQuests(list);
+        setQuestsLoaded(true);
+        setReady(true);
+      } catch (err) {
+        // Boot must never spin forever: surface the failure on the overlay
+        // (self-healing, BLUEPRINT §7) and log it like every other error.
+        console.error('[Bit-Terra] Boot gagal:', err);
+        logError(err, 'boot');
+        if (!cancelled) {
+          setBootError(
+            err instanceof Error ? err.message : 'Kesalahan tidak dikenal saat memuat.',
+          );
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -222,8 +237,18 @@ function AppShell() {
           >
             {musicOn ? 'Musik: Nyala' : 'Musik: Mati'}
           </button>
+          <button
+            type="button"
+            onClick={() => setDiagOpen(true)}
+            className="border-2 px-3 py-2 text-sm font-semibold"
+            style={{ borderColor: 'var(--bt-copper)', color: 'var(--bt-bezel)' }}
+          >
+            Periksa Kesehatan
+          </button>
         </div>
       </header>
+
+      {diagOpen && <DiagnosticsPanel onClose={() => setDiagOpen(false)} />}
 
       <main className="mx-auto w-full max-w-4xl px-4 pb-10">
         {pikoLine && (
